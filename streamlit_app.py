@@ -1,5 +1,7 @@
 import json
 import os
+import re
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -20,12 +22,262 @@ GLOBAL_CONTEXT = (
 )
 
 MODEL_DEFINITIONS = {
-    "Sunk Cost Fallacy": (
-        "关注未来的预期价值，而不是过去已经投入的成本。"
-        "当证据显示项目难以兑现时，应果断止损，"
-        "即使已付出大量资源与情感。"
-    )
+    "Sunk Cost Fallacy": {
+        "definition": (
+            "沉没成本谬误指人在决策时过度受已投入成本影响，"
+            "把过去的投入当作继续投入的理由。正确做法是只看未来的"
+            "预期价值与风险。"
+        ),
+        "example": (
+            "一款硬件已研发两年却迟迟无法量产，团队提出再投200万"
+            "也许能解决问题。你需要评估新增投入是否值得，而不是"
+            "因为已投入大量资源就继续加码。"
+        ),
+        "pitfall": (
+            "把“已经花了这么多”当成继续投入的依据；"
+            "把止损等同于否定过去努力；"
+            "忽视机会成本与替代方案。"
+        ),
+        "advice": (
+            "使用前瞻指标评估后续投入的边际收益；"
+            "设立止损线与阶段性验收；"
+            "区分情感承诺与商业回报。"
+        ),
+    }
 }
+
+
+def get_model_explanation(level_config: dict):
+    explanation = level_config.get("model_explanation")
+    if explanation:
+        return explanation
+    return MODEL_DEFINITIONS.get(level_config.get("target_model", ""))
+
+
+def format_model_explanation(explanation) -> str:
+    if isinstance(explanation, dict):
+        parts = []
+        definition = explanation.get("definition", "").strip()
+        example = explanation.get("example", "").strip()
+        pitfall = explanation.get("pitfall", "").strip()
+        advice = explanation.get("advice", "").strip()
+        if definition:
+            parts.append(f"定义：{definition}")
+        if example:
+            parts.append(f"简单案例：{example}")
+        if pitfall:
+            parts.append(f"常见误区：{pitfall}")
+        if advice:
+            parts.append(f"应用建议：{advice}")
+        return "\n".join(parts)
+    if isinstance(explanation, str):
+        return explanation.strip()
+    return ""
+
+
+def render_model_explanation(explanation) -> None:
+    if isinstance(explanation, dict):
+        definition = explanation.get("definition", "").strip()
+        example = explanation.get("example", "").strip()
+        pitfall = explanation.get("pitfall", "").strip()
+        advice = explanation.get("advice", "").strip()
+        if definition:
+            st.markdown(f"**定义**：{definition}")
+        if example:
+            st.markdown(f"**简单案例**：{example}")
+        if pitfall:
+            st.markdown(f"**常见误区**：{pitfall}")
+        if advice:
+            st.markdown(f"**应用建议**：{advice}")
+        return
+    if isinstance(explanation, str) and explanation.strip():
+        st.markdown(explanation)
+        return
+    st.markdown("暂无说明。")
+
+
+def format_setting(setting: dict) -> str:
+    if not isinstance(setting, dict):
+        return ""
+    parts = []
+    scene = setting.get("scene", "").strip()
+    background = setting.get("background", "").strip()
+    roles = setting.get("roles", "").strip()
+    era = setting.get("era", "").strip()
+    extra = setting.get("extra_requirements", "").strip()
+    if scene:
+        parts.append(f"场景：{scene}")
+    if background:
+        parts.append(f"背景：{background}")
+    if roles:
+        parts.append(f"角色：{roles}")
+    if era:
+        parts.append(f"时代：{era}")
+    if extra:
+        parts.append(f"要求：{extra}")
+    return "；".join(parts)
+
+
+def slugify_level_id(value: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+    if not base:
+        base = "level"
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    return f"{base}_{timestamp}"
+
+
+def ensure_unique_level_id(base_id: str) -> str:
+    candidate = base_id
+    counter = 1
+    while (LEVELS_DIR / f"{candidate}.json").exists():
+        candidate = f"{base_id}_{counter}"
+        counter += 1
+    return candidate
+
+
+def build_level_builder_prompt() -> str:
+    return (
+        f"{GLOBAL_CONTEXT}\n"
+        "角色：你是MindCraft的关卡设计师。根据输入的思维模型与设定生成关卡JSON。\n"
+        "必须输出严格JSON，不要额外文字。\n"
+        "JSON结构：\n"
+        "{\n"
+        '  "title": "...",\n'
+        '  "intro": "...",\n'
+        '  "victory_condition": "...",\n'
+        '  "max_turns": 10,\n'
+        '  "model_explanation": {\n'
+        '    "definition": "...",\n'
+        '    "example": "...",\n'
+        '    "pitfall": "...",\n'
+        '    "advice": "..." \n'
+        "  },\n"
+        '  "setting": {\n'
+        '    "scene": "...",\n'
+        '    "background": "...",\n'
+        '    "roles": "...",\n'
+        '    "era": "...",\n'
+        '    "extra_requirements": "..." \n'
+        "  }\n"
+        "}\n"
+        "要求：\n"
+        "- 全中文输出，命名具体，禁止使用“项目A/B”等抽象代号。\n"
+        "- intro使用第二人称，包含具体项目名、人物关系与业务数据。\n"
+        "- 引入现实复杂性、认知迷雾与人际摩擦。\n"
+        "- model_explanation每项2-4句，包含一个简单案例。\n"
+        "- victory_condition要可判定但不要直接照抄用户输入。\n"
+    )
+
+
+def parse_level_json(raw_text: str) -> dict | None:
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError:
+        start = raw_text.find("{")
+        end = raw_text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            data = json.loads(raw_text[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def merge_setting(user_setting: dict, generated_setting: dict) -> dict:
+    merged = {}
+    for key in ["scene", "background", "roles", "era", "extra_requirements"]:
+        value = ""
+        if isinstance(generated_setting, dict):
+            value = str(generated_setting.get(key, "")).strip()
+        if not value:
+            value = str(user_setting.get(key, "")).strip()
+        merged[key] = value
+    return merged
+
+
+def normalize_level_config(
+    raw_level: dict,
+    target_model: str,
+    title_hint: str,
+    max_turns: int,
+    user_setting: dict,
+) -> dict:
+    title = str(raw_level.get("title", "")).strip() or title_hint.strip()
+    if not title:
+        title = f"{target_model}训练关"
+
+    intro = str(raw_level.get("intro", "")).strip()
+    if not intro:
+        intro = "你面对一个需要谨慎决策的商业局面。"
+
+    victory_condition = str(raw_level.get("victory_condition", "")).strip()
+    if not victory_condition:
+        victory_condition = "依据目标思维模型做出关键决策并控制风险。"
+
+    model_explanation = raw_level.get("model_explanation", {})
+    if not isinstance(model_explanation, (dict, str)):
+        model_explanation = {}
+
+    setting = merge_setting(user_setting, raw_level.get("setting", {}))
+    level_id = ensure_unique_level_id(
+        slugify_level_id(title or target_model or "level")
+    )
+
+    return {
+        "level_id": level_id,
+        "title": title,
+        "intro": intro,
+        "target_model": target_model,
+        "victory_condition": victory_condition,
+        "max_turns": max_turns,
+        "model_explanation": model_explanation,
+        "setting": setting,
+    }
+
+
+def generate_level_config(
+    client: OpenAI,
+    model: str,
+    target_model: str,
+    title_hint: str,
+    user_setting: dict,
+    max_turns: int,
+) -> tuple[dict | None, str]:
+    payload = {
+        "target_model": target_model,
+        "title_hint": title_hint,
+        "setting": user_setting,
+        "max_turns": max_turns,
+    }
+    messages = [
+        {"role": "system", "content": build_level_builder_prompt()},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+    raw = call_chat_completion(client, model, messages, temperature=0.6)
+    parsed = parse_level_json(raw)
+    if not parsed:
+        return None, raw
+    return (
+        normalize_level_config(
+            parsed,
+            target_model=target_model,
+            title_hint=title_hint,
+            max_turns=max_turns,
+            user_setting=user_setting,
+        ),
+        raw,
+    )
+
+
+def save_level_config(level_config: dict) -> Path:
+    LEVELS_DIR.mkdir(parents=True, exist_ok=True)
+    path = LEVELS_DIR / f"{level_config['level_id']}.json"
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(level_config, handle, ensure_ascii=False, indent=2)
+    return path
 
 
 def resolve_base_url(model_name: str) -> str | None:
@@ -47,6 +299,10 @@ def load_level_configs() -> list[dict]:
             with path.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)
             data["_path"] = str(path)
+            if "level_id" not in data:
+                data["level_id"] = path.stem
+            if "max_turns" not in data:
+                data["max_turns"] = 10
             configs.append(data)
         except (OSError, json.JSONDecodeError):
             continue
@@ -167,10 +423,10 @@ def call_chat_completion(client: OpenAI, model: str, messages: list[dict], tempe
 
 
 def build_logic_prompt(level_config: dict) -> str:
-    model_definition = MODEL_DEFINITIONS.get(
-        level_config["target_model"],
-        "Apply the specified thinking model carefully.",
-    )
+    model_explanation = format_model_explanation(get_model_explanation(level_config))
+    if not model_explanation:
+        model_explanation = "请根据目标思维模型做出合理判定。"
+    setting_text = format_setting(level_config.get("setting", {}))
     return (
         f"{GLOBAL_CONTEXT}\n"
         "角色：你是逻辑判官。不要写故事，只输出JSON。\n"
@@ -178,9 +434,10 @@ def build_logic_prompt(level_config: dict) -> str:
         f"- 标题：{level_config['title']}\n"
         f"- 开场：{level_config['intro']}\n"
         f"- 目标模型：{level_config['target_model']}\n"
-        f"- 模型定义：{model_definition}\n"
+        f"- 模型解释：{model_explanation}\n"
         f"- 胜利条件：{level_config['victory_condition']}\n"
         f"- 最大回合：{level_config['max_turns']}\n"
+        f"- 补充设定：{setting_text}\n"
         "任务：\n"
         "1) 分析用户意图。\n"
         "2) 判断是否符合现实物理规则。\n"
@@ -448,6 +705,8 @@ if not level_configs:
     st.error("No level configs found. Add JSON files under ./levels to start.")
     st.stop()
 
+create_submitted = False
+
 with st.sidebar:
     st.header("MindCraft")
     default_api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY", "")
@@ -468,9 +727,75 @@ with st.sidebar:
         "Level Selector",
         options=list(range(len(level_configs))),
         format_func=lambda idx: level_titles[idx],
+        key="level_selector",
     )
     debug_mode = st.toggle("Debug Mode", value=False)
     restart_clicked = st.button("Restart Game")
+
+    with st.expander("Create New Level", expanded=False):
+        with st.form("create_level_form"):
+            new_title_hint = st.text_input("关卡标题（可选）")
+            new_model_name = st.text_input("思维模型名称（必填）")
+            new_scene = st.text_input("场景（可选）")
+            new_background = st.text_input("背景（可选）")
+            new_roles = st.text_input("角色（可选）")
+            new_era = st.text_input("时代（可选）")
+            new_requirements = st.text_area("附加要求（可选）", height=120)
+            new_max_turns = st.number_input(
+                "最大回合数",
+                min_value=3,
+                max_value=30,
+                value=10,
+                step=1,
+            )
+            create_submitted = st.form_submit_button("生成并创建关卡")
+
+if create_submitted:
+    if not new_model_name.strip():
+        st.warning("请填写思维模型名称。")
+        st.stop()
+    if not openai_api_key:
+        st.warning("请先填写API Key，再创建关卡。")
+        st.stop()
+    create_model = model_name.strip() or DEFAULT_MODEL
+    client_kwargs = {"api_key": openai_api_key}
+    resolved_base_url = resolve_base_url(create_model)
+    if resolved_base_url:
+        client_kwargs["base_url"] = resolved_base_url
+    client = OpenAI(**client_kwargs)
+    setting = {
+        "scene": new_scene.strip(),
+        "background": new_background.strip(),
+        "roles": new_roles.strip(),
+        "era": new_era.strip(),
+        "extra_requirements": new_requirements.strip(),
+    }
+    with st.spinner("正在生成关卡..."):
+        generated_level, raw_response = generate_level_config(
+            client=client,
+            model=create_model,
+            target_model=new_model_name.strip(),
+            title_hint=new_title_hint.strip(),
+            user_setting=setting,
+            max_turns=int(new_max_turns),
+        )
+    if not generated_level:
+        st.error("关卡生成失败，请稍后重试。")
+        if debug_mode:
+            with st.expander("Level Builder Output (Debug)", expanded=False):
+                st.code(raw_response, language="json")
+        st.stop()
+    save_level_config(generated_level)
+    refreshed_levels = load_level_configs()
+    new_index = 0
+    for idx, config in enumerate(refreshed_levels):
+        if config.get("level_id") == generated_level["level_id"]:
+            new_index = idx
+            break
+    st.session_state.level_selector = new_index
+    st.session_state.selected_level_id = generated_level["level_id"]
+    st.success("关卡已创建并写入配置。")
+    st.rerun()
 
 selected_level = level_configs[selected_index]
 ensure_game_state(selected_level)
@@ -490,9 +815,7 @@ with st.expander(
     f"思维模型解释：{selected_level['target_model']}",
     expanded=False,
 ):
-    st.markdown(
-        MODEL_DEFINITIONS.get(selected_level["target_model"], "暂无说明。")
-    )
+    render_model_explanation(get_model_explanation(selected_level))
 
 if st.session_state.game_over:
     if st.session_state.status == "won":
