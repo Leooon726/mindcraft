@@ -313,7 +313,7 @@ def process_turn(
     st.session_state.mentor_report = mentor_text
 
 
-st.set_page_config(page_title="MindCraft", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="MindCraft", layout="wide")
 st.title("MindCraft - Thinking Model Training Ground")
 
 level_configs = load_level_configs()
