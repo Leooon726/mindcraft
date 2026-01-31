@@ -21,9 +21,9 @@ GLOBAL_CONTEXT = (
 
 MODEL_DEFINITIONS = {
     "Sunk Cost Fallacy": (
-        "Focus on future expected value, not past investment. "
-        "Cut losses when evidence says a project will not deliver, "
-        "even if much has been spent already."
+        "关注未来的预期价值，而不是过去已经投入的成本。"
+        "当证据显示项目难以兑现时，应果断止损，"
+        "即使已付出大量资源与情感。"
     )
 }
 
@@ -486,6 +486,13 @@ st.subheader(
     f"{selected_level['title']} · {selected_level['target_model']}"
 )
 st.caption(turn_info)
+with st.expander(
+    f"思维模型解释：{selected_level['target_model']}",
+    expanded=False,
+):
+    st.markdown(
+        MODEL_DEFINITIONS.get(selected_level["target_model"], "暂无说明。")
+    )
 
 if st.session_state.game_over:
     if st.session_state.status == "won":
@@ -502,14 +509,25 @@ for entry in st.session_state.history:
     with st.chat_message("assistant"):
         st.markdown(entry["content"])
 
+if st.session_state.game_over and st.session_state.mentor_report:
+    st.markdown("---")
+    st.subheader("Shadow Mentor Report")
+    st.markdown(st.session_state.mentor_report)
+
 status_placeholder = st.empty()
 
 with st.form("action_form", clear_on_submit=True):
-    action_type = st.radio("Action Type", options=ACTION_TYPES, horizontal=True)
+    action_type = st.radio(
+        "Action Type",
+        options=ACTION_TYPES,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
     user_input = st.text_area(
         "Your instruction",
-        placeholder="Describe your action or reasoning...",
+        placeholder="请输入你的行动、对话或思考...",
         height=120,
+        label_visibility="collapsed",
     )
     send_disabled = st.session_state.game_over
     submitted = st.form_submit_button("Send", disabled=send_disabled)
@@ -559,7 +577,3 @@ if debug_mode:
             st.json(debug_payloads["mentor"]["messages"])
             st.code(debug_payloads["mentor"]["response"] or "", language="text")
 
-if st.session_state.game_over and st.session_state.mentor_report:
-    st.markdown("---")
-    st.subheader("Shadow Mentor Report")
-    st.markdown(st.session_state.mentor_report)
