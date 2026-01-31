@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import re
@@ -774,7 +775,46 @@ def process_turn(
 
 
 st.set_page_config(page_title="MindCraft", layout="wide")
-st.title("MindCraft - Thinking Model Training Ground")
+st.markdown(
+    """
+<style>
+.app-title {
+  font-size: 1.6rem;
+  font-weight: 700;
+  margin-bottom: 0.4rem;
+}
+.level-title {
+  font-size: 1.2rem;
+  font-weight: 600;
+  margin-top: 0.2rem;
+  margin-bottom: 0.25rem;
+}
+[data-testid="stChatMessageAvatar"] {
+  display: none;
+}
+[data-testid="stChatMessage"] {
+  gap: 0.5rem;
+  padding-left: 0;
+}
+[data-testid="stChatMessageContent"] {
+  border-radius: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  background-color: #f3f5f9;
+}
+[data-testid="stChatMessage"][data-role="user"] [data-testid="stChatMessageContent"] {
+  background-color: #e8f0ff;
+}
+[data-testid="stChatMessage"][data-role="assistant"] [data-testid="stChatMessageContent"] {
+  background-color: #f3f5f9;
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<div class="app-title">MindCraft - Thinking Model Training Ground</div>',
+    unsafe_allow_html=True,
+)
 
 level_configs = load_level_configs()
 if not level_configs:
@@ -884,8 +924,11 @@ if not openai_api_key:
     st.info("Enter your API key to start playing.")
 
 turn_info = f"Turn {st.session_state.turn_count}/{selected_level['max_turns']}"
-st.subheader(
-    f"{selected_level['title']} · {selected_level['target_model']}"
+level_title = html.escape(selected_level["title"])
+level_model = html.escape(selected_level["target_model"])
+st.markdown(
+    f'<div class="level-title">{level_title} · {level_model}</div>',
+    unsafe_allow_html=True,
 )
 st.caption(turn_info)
 with st.expander(
