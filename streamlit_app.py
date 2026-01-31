@@ -260,6 +260,7 @@ def process_turn(
     level_config: dict,
     action_type: str,
     user_input: str,
+    status_placeholder=None,
 ) -> None:
     next_turn = st.session_state.turn_count + 1
     history_summary = summarize_history(st.session_state.history)
@@ -284,13 +285,24 @@ def process_turn(
     }
 
     try:
-        with st.spinner("Logic Engine is thinking..."):
-            logic_raw = call_chat_completion(
-                client,
-                model,
-                logic_messages,
-                temperature=0.2,
-            )
+        if status_placeholder:
+            status_placeholder.empty()
+            with status_placeholder.container():
+                with st.spinner("逻辑判官正在思考..."):
+                    logic_raw = call_chat_completion(
+                        client,
+                        model,
+                        logic_messages,
+                        temperature=0.2,
+                    )
+        else:
+            with st.spinner("逻辑判官正在思考..."):
+                logic_raw = call_chat_completion(
+                    client,
+                    model,
+                    logic_messages,
+                    temperature=0.2,
+                )
         st.session_state.last_debug["logic"]["response"] = logic_raw
     except Exception:
         st.error("逻辑判官请求失败，请检查API Key、模型或Base URL。")
@@ -352,13 +364,24 @@ def process_turn(
     st.session_state.last_debug["narrator"]["messages"] = narrator_messages
 
     try:
-        with st.spinner("Narrator is writing..."):
-            narrative_text = call_chat_completion(
-                client,
-                model,
-                narrator_messages,
-                temperature=0.7,
-            )
+        if status_placeholder:
+            status_placeholder.empty()
+            with status_placeholder.container():
+                with st.spinner("叙事者正在创作..."):
+                    narrative_text = call_chat_completion(
+                        client,
+                        model,
+                        narrator_messages,
+                        temperature=0.7,
+                    )
+        else:
+            with st.spinner("叙事者正在创作..."):
+                narrative_text = call_chat_completion(
+                    client,
+                    model,
+                    narrator_messages,
+                    temperature=0.7,
+                )
         st.session_state.last_debug["narrator"]["response"] = narrative_text
     except Exception:
         st.error("叙事者请求失败，请稍后重试。")
@@ -391,13 +414,24 @@ def process_turn(
     st.session_state.last_debug["mentor"]["messages"] = mentor_messages
 
     try:
-        with st.spinner("Shadow Mentor is reflecting..."):
-            mentor_text = call_chat_completion(
-                client,
-                model,
-                mentor_messages,
-                temperature=0.4,
-            )
+        if status_placeholder:
+            status_placeholder.empty()
+            with status_placeholder.container():
+                with st.spinner("影子导师正在复盘..."):
+                    mentor_text = call_chat_completion(
+                        client,
+                        model,
+                        mentor_messages,
+                        temperature=0.4,
+                    )
+        else:
+            with st.spinner("影子导师正在复盘..."):
+                mentor_text = call_chat_completion(
+                    client,
+                    model,
+                    mentor_messages,
+                    temperature=0.4,
+                )
         st.session_state.mentor_report = mentor_text
         st.session_state.last_debug["mentor"]["response"] = mentor_text
     except Exception:
@@ -468,6 +502,8 @@ for entry in st.session_state.history:
     with st.chat_message("assistant"):
         st.markdown(entry["content"])
 
+status_placeholder = st.empty()
+
 with st.form("action_form", clear_on_submit=True):
     action_type = st.radio("Action Type", options=ACTION_TYPES, horizontal=True)
     user_input = st.text_area(
@@ -499,6 +535,7 @@ if submitted:
         level_config=selected_level,
         action_type=action_type,
         user_input=user_input.strip(),
+        status_placeholder=status_placeholder,
     )
     st.rerun()
 
