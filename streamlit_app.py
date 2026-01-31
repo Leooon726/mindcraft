@@ -9,6 +9,7 @@ from openai import OpenAI
 LEVELS_DIR = Path(__file__).parent / "levels"
 ACTION_TYPES = ["Observe", "Talk", "Action", "Think"]
 DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 GLOBAL_CONTEXT = (
     "You are part of a MindCraft thinking training system. "
@@ -24,6 +25,15 @@ MODEL_DEFINITIONS = {
         "even if much has been spent already."
     )
 }
+
+
+def resolve_base_url(model_name: str) -> str | None:
+    env_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    if env_base_url:
+        return env_base_url
+    if model_name.strip().lower().startswith("deepseek"):
+        return DEFAULT_DEEPSEEK_BASE_URL
+    return None
 
 
 def load_level_configs() -> list[dict]:
@@ -218,10 +228,6 @@ def process_turn(
     user_input: str,
 ) -> None:
     next_turn = st.session_state.turn_count + 1
-    st.session_state.history.append(
-        {"role": "user", "content": user_input, "action_type": action_type}
-    )
-
     history_summary = summarize_history(st.session_state.history)
     logic_payload = {
         "action_type": action_type,
@@ -233,16 +239,25 @@ def process_turn(
         "recent_history": history_summary,
     }
 
-    with st.spinner("Logic Engine is thinking..."):
-        logic_raw = call_chat_completion(
-            client,
-            model,
-            [
-                {"role": "system", "content": build_logic_prompt(level_config)},
-                {"role": "user", "content": json.dumps(logic_payload, ensure_ascii=False)},
-            ],
-            temperature=0.2,
+    try:
+        with st.spinner("Logic Engine is thinking..."):
+            logic_raw = call_chat_completion(
+                client,
+                model,
+                [
+                    {"role": "system", "content": build_logic_prompt(level_config)},
+                    {
+                        "role": "user",
+                        "content": json.dumps(logic_payload, ensure_ascii=False),
+                    },
+                ],
+                temperature=0.2,
+            )
+    except Exception:
+        st.error(
+            "Logic Engine request failed. Check your API key, model, or base URL."
         )
+        return
 
     logic_result = normalize_logic_result(
         parse_logic_json(logic_raw),
@@ -260,27 +275,35 @@ def process_turn(
         }
     )
 
-    with st.spinner("Narrator is writing..."):
-        narrative_text = call_chat_completion(
-            client,
-            model,
-            [
-                {"role": "system", "content": build_narrator_prompt()},
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "action_type": action_type,
-                            "user_input": user_input,
-                            "logic_result": logic_result,
-                            "turn": next_turn,
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
-            temperature=0.7,
-        )
+    st.session_state.history.append(
+        {"role": "user", "content": user_input, "action_type": action_type}
+    )
+
+    try:
+        with st.spinner("Narrator is writing..."):
+            narrative_text = call_chat_completion(
+                client,
+                model,
+                [
+                    {"role": "system", "content": build_narrator_prompt()},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "action_type": action_type,
+                                "user_input": user_input,
+                                "logic_result": logic_result,
+                                "turn": next_turn,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+                temperature=0.7,
+            )
+    except Exception:
+        st.error("Narrator request failed. Please try again.")
+        narrative_text = "The narrator is unavailable right now."
 
     st.session_state.history.append({"role": "assistant", "content": narrative_text})
     st.session_state.turn_count = next_turn
@@ -290,28 +313,32 @@ def process_turn(
     if not st.session_state.game_over:
         return
 
-    with st.spinner("Shadow Mentor is reflecting..."):
-        mentor_text = call_chat_completion(
-            client,
-            model,
-            [
-                {"role": "system", "content": build_mentor_prompt()},
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "level": level_config,
-                            "final_status": st.session_state.status,
-                            "history": st.session_state.history,
-                            "game_log": st.session_state.game_log,
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
-            temperature=0.4,
-        )
-    st.session_state.mentor_report = mentor_text
+    try:
+        with st.spinner("Shadow Mentor is reflecting..."):
+            mentor_text = call_chat_completion(
+                client,
+                model,
+                [
+                    {"role": "system", "content": build_mentor_prompt()},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "level": level_config,
+                                "final_status": st.session_state.status,
+                                "history": st.session_state.history,
+                                "game_log": st.session_state.game_log,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+                temperature=0.4,
+            )
+        st.session_state.mentor_report = mentor_text
+    except Exception:
+        st.error("Shadow Mentor request failed. Please try again.")
+        st.session_state.mentor_report = "Shadow Mentor is unavailable right now."
 
 
 st.set_page_config(page_title="MindCraft", layout="wide")
@@ -331,6 +358,10 @@ with st.sidebar:
         value=default_api_key,
     )
     model_name = st.text_input("Model", value=DEFAULT_MODEL)
+    st.caption(
+        "Base URL uses OPENAI_BASE_URL if set. Deepseek models default to "
+        f"{DEFAULT_DEEPSEEK_BASE_URL}."
+    )
     level_titles = [
         f"{config['title']} - {config['target_model']}" for config in level_configs
     ]
@@ -391,15 +422,16 @@ if submitted:
         st.warning("Please enter a valid instruction.")
         st.stop()
 
+    normalized_model = model_name.strip() or DEFAULT_MODEL
     client_kwargs = {"api_key": openai_api_key}
-    base_url_env = os.getenv("OPENAI_BASE_URL", "").strip()
-    if base_url_env:
-        client_kwargs["base_url"] = base_url_env
+    resolved_base_url = resolve_base_url(normalized_model)
+    if resolved_base_url:
+        client_kwargs["base_url"] = resolved_base_url
     client = OpenAI(**client_kwargs)
 
     process_turn(
         client=client,
-        model=model_name.strip() or DEFAULT_MODEL,
+        model=normalized_model,
         level_config=selected_level,
         action_type=action_type,
         user_input=user_input.strip(),
