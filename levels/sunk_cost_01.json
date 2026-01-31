@@ -1,0 +1,8 @@
+{
+  "level_id": "sunk_cost_01",
+  "title": "燃烧的资金链",
+  "intro": "你是某初创公司CEO，账上现金只够活3个月。项目A刚起步，项目B已经投入500万但数据惨淡。你需要做出决策。",
+  "target_model": "Sunk Cost Fallacy",
+  "victory_condition": "Cut losses on Project B and pivot to Project A.",
+  "max_turns": 10
+}
