@@ -203,6 +203,8 @@ def build_narrator_prompt() -> str:
         "- 使用第二人称。\n"
         "- 1-2段短段落。\n"
         "- 严格遵循逻辑结果和提示。\n"
+        "- 可以合理推进时间（如几天或几个月后）。\n"
+        "- 必须以明确的下一步困境或问题收尾，引导玩家行动。\n"
         "- 不要暴露JSON或内部评估备注。\n"
         "- 若游戏结束，用收束句收尾，不要继续提问。"
     )
@@ -240,24 +242,28 @@ def process_turn(
         "recent_history": history_summary,
     }
 
+    logic_messages = [
+        {"role": "system", "content": build_logic_prompt(level_config)},
+        {"role": "user", "content": json.dumps(logic_payload, ensure_ascii=False)},
+    ]
+    st.session_state.last_debug = {
+        "logic": {"messages": logic_messages, "response": None},
+        "narrator": {"messages": None, "response": None},
+        "mentor": {"messages": None, "response": None},
+    }
+
     try:
         with st.spinner("Logic Engine is thinking..."):
             logic_raw = call_chat_completion(
                 client,
                 model,
-                [
-                    {"role": "system", "content": build_logic_prompt(level_config)},
-                    {
-                        "role": "user",
-                        "content": json.dumps(logic_payload, ensure_ascii=False),
-                    },
-                ],
+                logic_messages,
                 temperature=0.2,
             )
+        st.session_state.last_debug["logic"]["response"] = logic_raw
     except Exception:
-        st.error(
-            "Logic Engine request failed. Check your API key, model, or base URL."
-        )
+        st.error("逻辑判官请求失败，请检查API Key、模型或Base URL。")
+        st.session_state.last_debug["logic"]["response"] = "ERROR"
         return
 
     logic_result = normalize_logic_result(
@@ -280,31 +286,36 @@ def process_turn(
         {"role": "user", "content": user_input, "action_type": action_type}
     )
 
+    narrator_messages = [
+        {"role": "system", "content": build_narrator_prompt()},
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "action_type": action_type,
+                    "user_input": user_input,
+                    "logic_result": logic_result,
+                    "turn": next_turn,
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    st.session_state.last_debug["narrator"]["messages"] = narrator_messages
+
     try:
         with st.spinner("Narrator is writing..."):
             narrative_text = call_chat_completion(
                 client,
                 model,
-                [
-                    {"role": "system", "content": build_narrator_prompt()},
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "action_type": action_type,
-                                "user_input": user_input,
-                                "logic_result": logic_result,
-                                "turn": next_turn,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                ],
+                narrator_messages,
                 temperature=0.7,
             )
+        st.session_state.last_debug["narrator"]["response"] = narrative_text
     except Exception:
-        st.error("Narrator request failed. Please try again.")
-        narrative_text = "The narrator is unavailable right now."
+        st.error("叙事者请求失败，请稍后重试。")
+        narrative_text = "叙事者暂时不可用。"
+        st.session_state.last_debug["narrator"]["response"] = "ERROR"
 
     st.session_state.history.append({"role": "assistant", "content": narrative_text})
     st.session_state.turn_count = next_turn
@@ -314,32 +325,37 @@ def process_turn(
     if not st.session_state.game_over:
         return
 
+    mentor_messages = [
+        {"role": "system", "content": build_mentor_prompt()},
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "level": level_config,
+                    "final_status": st.session_state.status,
+                    "history": st.session_state.history,
+                    "game_log": st.session_state.game_log,
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    st.session_state.last_debug["mentor"]["messages"] = mentor_messages
+
     try:
         with st.spinner("Shadow Mentor is reflecting..."):
             mentor_text = call_chat_completion(
                 client,
                 model,
-                [
-                    {"role": "system", "content": build_mentor_prompt()},
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "level": level_config,
-                                "final_status": st.session_state.status,
-                                "history": st.session_state.history,
-                                "game_log": st.session_state.game_log,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                ],
+                mentor_messages,
                 temperature=0.4,
             )
         st.session_state.mentor_report = mentor_text
+        st.session_state.last_debug["mentor"]["response"] = mentor_text
     except Exception:
-        st.error("Shadow Mentor request failed. Please try again.")
-        st.session_state.mentor_report = "Shadow Mentor is unavailable right now."
+        st.error("影子导师请求失败，请稍后重试。")
+        st.session_state.mentor_report = "影子导师暂时不可用。"
+        st.session_state.last_debug["mentor"]["response"] = "ERROR"
 
 
 st.set_page_config(page_title="MindCraft", layout="wide")
@@ -439,10 +455,25 @@ if submitted:
     )
     st.rerun()
 
-if debug_mode and st.session_state.last_logic:
-    with st.expander("Logic Engine Output (Debug)", expanded=False):
-        st.code(st.session_state.last_logic["raw"], language="json")
-        st.json(st.session_state.last_logic["parsed"])
+if debug_mode:
+    if st.session_state.get("last_logic"):
+        with st.expander("Logic Engine Output (Debug)", expanded=False):
+            st.code(st.session_state.last_logic["raw"], language="json")
+            st.json(st.session_state.last_logic["parsed"])
+
+    debug_payloads = st.session_state.get("last_debug")
+    if debug_payloads:
+        with st.expander("Logic Engine Prompts + Response", expanded=False):
+            st.json(debug_payloads["logic"]["messages"])
+            st.code(debug_payloads["logic"]["response"] or "", language="text")
+
+        with st.expander("Narrator Prompts + Response", expanded=False):
+            st.json(debug_payloads["narrator"]["messages"])
+            st.code(debug_payloads["narrator"]["response"] or "", language="text")
+
+        with st.expander("Shadow Mentor Prompts + Response", expanded=False):
+            st.json(debug_payloads["mentor"]["messages"])
+            st.code(debug_payloads["mentor"]["response"] or "", language="text")
 
 if st.session_state.game_over and st.session_state.mentor_report:
     st.markdown("---")
