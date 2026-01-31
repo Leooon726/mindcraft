@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import streamlit as st
@@ -7,7 +8,7 @@ from openai import OpenAI
 
 LEVELS_DIR = Path(__file__).parent / "levels"
 ACTION_TYPES = ["Observe", "Talk", "Action", "Think"]
-DEFAULT_MODEL = "gpt-3.5-turbo"
+DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
 
 GLOBAL_CONTEXT = (
     "You are part of a MindCraft thinking training system. "
@@ -323,8 +324,12 @@ if not level_configs:
 
 with st.sidebar:
     st.header("MindCraft")
-    openai_api_key = st.text_input("OpenAI API Key", type="password")
-    base_url = st.text_input("API Base URL (optional)")
+    default_api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY", "")
+    openai_api_key = st.text_input(
+        "OpenAI API Key",
+        type="password",
+        value=default_api_key,
+    )
     model_name = st.text_input("Model", value=DEFAULT_MODEL)
     level_titles = [
         f"{config['title']} - {config['target_model']}" for config in level_configs
@@ -387,8 +392,9 @@ if submitted:
         st.stop()
 
     client_kwargs = {"api_key": openai_api_key}
-    if base_url.strip():
-        client_kwargs["base_url"] = base_url.strip()
+    base_url_env = os.getenv("OPENAI_BASE_URL", "").strip()
+    if base_url_env:
+        client_kwargs["base_url"] = base_url_env
     client = OpenAI(**client_kwargs)
 
     process_turn(
