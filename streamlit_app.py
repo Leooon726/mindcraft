@@ -789,8 +789,18 @@ st.markdown(
   margin-top: 0.2rem;
   margin-bottom: 0.25rem;
 }
-[data-testid="stChatMessageAvatar"] {
-  display: none;
+[data-testid="stChatMessageAvatar"],
+[data-testid="stChatMessageAvatar"] *,
+.stChatMessageAvatar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  visibility: hidden !important;
+}
+[data-testid="stChatMessage"] > div:first-child {
+  display: none !important;
 }
 [data-testid="stChatMessage"] {
   gap: 0.5rem;
