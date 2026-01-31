@@ -86,7 +86,8 @@ def summarize_history(history: list[dict], limit: int = 6) -> str:
     for entry in history[-limit:]:
         if entry["role"] == "user":
             action = entry.get("action_type", "Action")
-            lines.append(f"User[{action}]: {entry['content']}")
+            content = entry.get("normalized_content", entry.get("content", ""))
+            lines.append(f"User[{action}]: {content}")
             continue
         lines.append(f"Narrator: {entry['content']}")
     return "\n".join(lines)
@@ -116,12 +117,14 @@ def normalize_logic_result(
 ) -> dict:
     defaults = {
         "outcome": "neutral",
-        "narrative_guidance": "Continue the story with realistic consequences.",
+        "narrative_guidance": "请用现实后果推进剧情。",
         "hidden_score": 0,
         "game_over": False,
         "status": "active",
         "state_change": "",
         "internal_comment": "",
+        "normalized_input": "",
+        "corrections": [],
     }
     if not result:
         return defaults
@@ -183,6 +186,8 @@ def build_logic_prompt(level_config: dict) -> str:
         "2) 判断是否符合现实物理规则。\n"
         "3) 判断是否符合目标思维模型，尤其是Think动作。\n"
         "4) 更新游戏状态并给叙事者提示。\n"
+        "5) 识别错别字或误拼写，推断用户本意，并给出修正结果。\n"
+        "   - 如果不确定，保留原词但给出可能的备选。\n"
         "HARD_MODE_JUDGMENT（高难度判定）：\n"
         "1) 区分意图与行动：\n"
         "- 用户只说“砍掉项目/转向X”且缺乏沟通策略 -> 结果不应直接成功。\n"
@@ -200,6 +205,8 @@ def build_logic_prompt(level_config: dict) -> str:
         "- status: active|won|lost\n"
         "- state_change: 简短状态变化\n"
         "- internal_comment: 简短评估备注\n"
+        "- normalized_input: 纠正错别字后的用户意图文本\n"
+        "- corrections: 列表，每项包含wrong/right/note\n"
         "只输出JSON，不要额外文本。"
     )
 
@@ -226,7 +233,11 @@ def build_narrator_prompt() -> str:
         "1) 禁止上帝视角：不要描述主角无法看到/听到/触碰的宏观事实。\n"
         "2) 信息必须有载体：所有关键事实必须通过报表、对话、邮件、截图等媒介传达。\n"
         "3) 不可靠叙述：只写“现象”，把判断留给玩家（员工可能撒谎，报表可能有误）。\n"
-        "4) 视角范围受限：如果主角不在现场，不要描写现场。"
+        "4) 视角范围受限：如果主角不在现场，不要描写现场。\n"
+        "\nTYPO_NORMALIZATION（错别字纠正）：\n"
+        "- 优先使用逻辑判官提供的normalized_input与corrections。\n"
+        "- 叙事中不要复述用户的错别字或误拼写。\n"
+        "- 对名称或术语使用修正后的写法。"
     )
 
 
@@ -291,19 +302,34 @@ def process_turn(
         turn_count=next_turn,
         max_turns=level_config["max_turns"],
     )
+    normalized_input = logic_result.get("normalized_input")
+    if not isinstance(normalized_input, str) or not normalized_input.strip():
+        normalized_input = user_input
+    corrections = logic_result.get("corrections")
+    if not isinstance(corrections, list):
+        corrections = []
+    logic_result["normalized_input"] = normalized_input
+    logic_result["corrections"] = corrections
     st.session_state.last_logic = {"raw": logic_raw, "parsed": logic_result}
     st.session_state.game_log.append(
         {
             "turn": next_turn,
             "action_type": action_type,
             "user_input": user_input,
+            "normalized_input": normalized_input,
+            "corrections": corrections,
             "logic_raw": logic_raw,
             "logic_result": logic_result,
         }
     )
 
     st.session_state.history.append(
-        {"role": "user", "content": user_input, "action_type": action_type}
+        {
+            "role": "user",
+            "content": user_input,
+            "normalized_content": normalized_input,
+            "action_type": action_type,
+        }
     )
 
     narrator_messages = [
@@ -313,7 +339,9 @@ def process_turn(
             "content": json.dumps(
                 {
                     "action_type": action_type,
-                    "user_input": user_input,
+                    "user_input_raw": user_input,
+                    "user_input_normalized": normalized_input,
+                    "corrections": corrections,
                     "logic_result": logic_result,
                     "turn": next_turn,
                 },
