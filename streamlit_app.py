@@ -12,10 +12,11 @@ DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
 DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 
 GLOBAL_CONTEXT = (
-    "You are part of a MindCraft thinking training system. "
-    "World: realistic logic, no magic. "
-    "Core mechanism: physical victory must be driven by correct thinking. "
-    "Do not give empty praise unless the user truly applies the target model."
+    "你是MindCraft思维训练系统的一部分。"
+    "世界观：严谨现实逻辑，无魔法。"
+    "核心机制：物理胜利必须由正确的思维驱动。"
+    "除非用户真正运用了目标思维模型，否则不要空泛表扬。"
+    "所有输出必须使用中文。"
 )
 
 MODEL_DEFINITIONS = {
@@ -169,54 +170,54 @@ def build_logic_prompt(level_config: dict) -> str:
     )
     return (
         f"{GLOBAL_CONTEXT}\n"
-        "Role: You are the Logic Engine. Do not write story, only return JSON.\n"
-        "Level information:\n"
-        f"- Title: {level_config['title']}\n"
-        f"- Intro: {level_config['intro']}\n"
-        f"- Target model: {level_config['target_model']}\n"
-        f"- Model definition: {model_definition}\n"
-        f"- Victory condition: {level_config['victory_condition']}\n"
-        f"- Max turns: {level_config['max_turns']}\n"
-        "Tasks:\n"
-        "1) Analyze user intent.\n"
-        "2) Check physical plausibility (realistic world).\n"
-        "3) Check alignment with the target model, especially on Think actions.\n"
-        "4) Update game status and provide guidance for the narrator.\n"
-        "Return JSON with keys:\n"
+        "角色：你是逻辑判官。不要写故事，只输出JSON。\n"
+        "关卡信息：\n"
+        f"- 标题：{level_config['title']}\n"
+        f"- 开场：{level_config['intro']}\n"
+        f"- 目标模型：{level_config['target_model']}\n"
+        f"- 模型定义：{model_definition}\n"
+        f"- 胜利条件：{level_config['victory_condition']}\n"
+        f"- 最大回合：{level_config['max_turns']}\n"
+        "任务：\n"
+        "1) 分析用户意图。\n"
+        "2) 判断是否符合现实物理规则。\n"
+        "3) 判断是否符合目标思维模型，尤其是Think动作。\n"
+        "4) 更新游戏状态并给叙事者提示。\n"
+        "只返回JSON，字段如下：\n"
         "- outcome: success|fail|neutral\n"
-        "- narrative_guidance: short instruction for the narrator\n"
-        "- hidden_score: integer -10..10\n"
-        "- game_over: boolean\n"
+        "- narrative_guidance: 给叙事者的中文提示\n"
+        "- hidden_score: 整数 -10..10\n"
+        "- game_over: 布尔值\n"
         "- status: active|won|lost\n"
-        "- state_change: short state update\n"
-        "- internal_comment: brief evaluator notes\n"
-        "Output JSON only, no extra text."
+        "- state_change: 简短状态变化\n"
+        "- internal_comment: 简短评估备注\n"
+        "只输出JSON，不要额外文本。"
     )
 
 
 def build_narrator_prompt() -> str:
     return (
         f"{GLOBAL_CONTEXT}\n"
-        "Role: You are the Narrator. Render the logic guidance into a vivid story.\n"
-        "Rules:\n"
-        "- Use second-person.\n"
-        "- 1-2 short paragraphs.\n"
-        "- Respect the logic outcome and guidance strictly.\n"
-        "- Do not expose JSON or internal evaluator notes.\n"
-        "- If the game is over, end with a closing line instead of a prompt."
+        "角色：你是叙事者。把逻辑提示渲染成有代入感的故事。\n"
+        "规则：\n"
+        "- 使用第二人称。\n"
+        "- 1-2段短段落。\n"
+        "- 严格遵循逻辑结果和提示。\n"
+        "- 不要暴露JSON或内部评估备注。\n"
+        "- 若游戏结束，用收束句收尾，不要继续提问。"
     )
 
 
 def build_mentor_prompt() -> str:
     return (
         f"{GLOBAL_CONTEXT}\n"
-        "Role: You are the Shadow Mentor. Write a post-game analysis in Markdown.\n"
-        "Include sections:\n"
-        "1) Summary\n"
-        "2) Model Use\n"
-        "3) Missed Opportunities\n"
-        "4) Next Steps\n"
-        "Be candid and specific, referencing the user's decisions."
+        "角色：你是影子导师。用Markdown写复盘分析。\n"
+        "必须包含以下小节：\n"
+        "1) 总结\n"
+        "2) 模型运用\n"
+        "3) 遗漏机会\n"
+        "4) 下一步建议\n"
+        "要求直率、具体，引用用户的关键决策。"
     )
 
 
