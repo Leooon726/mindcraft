@@ -707,6 +707,13 @@ if not level_configs:
 
 create_submitted = False
 
+pending_level_id = st.session_state.pop("pending_level_id", None)
+if pending_level_id:
+    for idx, config in enumerate(level_configs):
+        if config.get("level_id") == pending_level_id:
+            st.session_state["level_selector"] = idx
+            break
+
 with st.sidebar:
     st.header("MindCraft")
     default_api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY", "")
@@ -786,13 +793,7 @@ if create_submitted:
                 st.code(raw_response, language="json")
         st.stop()
     save_level_config(generated_level)
-    refreshed_levels = load_level_configs()
-    new_index = 0
-    for idx, config in enumerate(refreshed_levels):
-        if config.get("level_id") == generated_level["level_id"]:
-            new_index = idx
-            break
-    st.session_state.level_selector = new_index
+    st.session_state["pending_level_id"] = generated_level["level_id"]
     st.session_state.selected_level_id = generated_level["level_id"]
     st.success("关卡已创建并写入配置。")
     st.rerun()
