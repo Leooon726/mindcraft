@@ -12,6 +12,7 @@ LEVELS_DIR = Path(__file__).parent / "levels"
 ACTION_TYPES = ["Observe", "Talk", "Action", "Think"]
 DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
 DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
+ENTITY_KEYS = ["people", "projects", "locations", "organizations", "assets"]
 
 GLOBAL_CONTEXT = (
     "你是MindCraft思维训练系统的一部分。"
@@ -318,6 +319,9 @@ def reset_game(level_config: dict) -> None:
     st.session_state.status = "active"
     st.session_state.mentor_report = None
     st.session_state.last_logic = None
+    st.session_state.entity_bank = normalize_entity_bank(
+        level_config.get("entities", {})
+    )
     st.session_state.selected_level_id = level_config["level_id"]
 
 
@@ -347,6 +351,59 @@ def summarize_history(history: list[dict], limit: int = 6) -> str:
             continue
         lines.append(f"Narrator: {entry['content']}")
     return "\n".join(lines)
+
+
+def normalize_entity_list(items) -> list[str]:
+    if isinstance(items, str):
+        items = [items]
+    if not isinstance(items, list):
+        return []
+    seen = set()
+    normalized: list[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        value = item.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def normalize_entity_bank(bank) -> dict:
+    normalized = {key: [] for key in ENTITY_KEYS}
+    if not isinstance(bank, dict):
+        return normalized
+    for key in ENTITY_KEYS:
+        normalized[key] = normalize_entity_list(bank.get(key, []))
+    return normalized
+
+
+def merge_entity_banks(base: dict, updates: dict) -> dict:
+    merged = normalize_entity_bank(base)
+    normalized_updates = normalize_entity_bank(updates)
+    for key in ENTITY_KEYS:
+        for item in normalized_updates[key]:
+            if item not in merged[key]:
+                merged[key].append(item)
+    return merged
+
+
+def format_entity_bank(bank: dict) -> str:
+    labels = {
+        "people": "人物",
+        "projects": "项目",
+        "locations": "地点",
+        "organizations": "组织",
+        "assets": "资产/产品",
+    }
+    lines = []
+    for key in ENTITY_KEYS:
+        items = bank.get(key, [])
+        if items:
+            lines.append(f"{labels[key]}：{', '.join(items)}")
+    return "\n".join(lines) if lines else "暂无"
 
 
 def parse_logic_json(raw_text: str) -> dict | None:
@@ -381,6 +438,7 @@ def normalize_logic_result(
         "internal_comment": "",
         "normalized_input": "",
         "corrections": [],
+        "entities": {},
     }
     if not result:
         return defaults
@@ -445,6 +503,8 @@ def build_logic_prompt(level_config: dict) -> str:
         "4) 更新游戏状态并给叙事者提示。\n"
         "5) 识别错别字或误拼写，推断用户本意，并给出修正结果。\n"
         "   - 如果不确定，保留原词但给出可能的备选。\n"
+        "6) 实体一致性：基于提供的entity_bank复用已有名称，\n"
+        "   仅在必要时新增，并在输出的entities中给出最新实体表。\n"
         "HARD_MODE_JUDGMENT（高难度判定）：\n"
         "1) 区分意图与行动：\n"
         "- 用户只说“砍掉项目/转向X”且缺乏沟通策略 -> 结果不应直接成功。\n"
@@ -464,6 +524,7 @@ def build_logic_prompt(level_config: dict) -> str:
         "- internal_comment: 简短评估备注\n"
         "- normalized_input: 纠正错别字后的用户意图文本\n"
         "- corrections: 列表，每项包含wrong/right/note\n"
+        "- entities: 实体表，包含people/projects/locations/organizations/assets\n"
         "只输出JSON，不要额外文本。"
     )
 
@@ -495,6 +556,10 @@ def build_narrator_prompt() -> str:
         "- 优先使用逻辑判官提供的normalized_input与corrections。\n"
         "- 叙事中不要复述用户的错别字或误拼写。\n"
         "- 对名称或术语使用修正后的写法。"
+        "\nENTITY_CONSISTENCY（实体一致性）：\n"
+        "- 必须复用提供的entity_bank中的名称。\n"
+        "- 未经必要不要改名或新增角色/地点/项目。\n"
+        "- 如需新增，必须与既有实体风格一致。"
     )
 
 
@@ -529,6 +594,7 @@ def process_turn(
         "current_status": st.session_state.status,
         "victory_condition": level_config["victory_condition"],
         "recent_history": history_summary,
+        "entity_bank": st.session_state.entity_bank,
     }
 
     logic_messages = [
@@ -579,6 +645,14 @@ def process_turn(
         corrections = []
     logic_result["normalized_input"] = normalized_input
     logic_result["corrections"] = corrections
+    logic_entities = logic_result.get("entities", {})
+    if not isinstance(logic_entities, dict):
+        logic_entities = {}
+    st.session_state.entity_bank = merge_entity_banks(
+        st.session_state.entity_bank,
+        logic_entities,
+    )
+    logic_result["entities"] = st.session_state.entity_bank
     st.session_state.last_logic = {"raw": logic_raw, "parsed": logic_result}
     st.session_state.game_log.append(
         {
@@ -587,6 +661,7 @@ def process_turn(
             "user_input": user_input,
             "normalized_input": normalized_input,
             "corrections": corrections,
+            "entities": st.session_state.entity_bank,
             "logic_raw": logic_raw,
             "logic_result": logic_result,
         }
@@ -613,6 +688,7 @@ def process_turn(
                     "corrections": corrections,
                     "logic_result": logic_result,
                     "turn": next_turn,
+                    "entity_bank": st.session_state.entity_bank,
                 },
                 ensure_ascii=False,
             ),
@@ -889,6 +965,9 @@ if debug_mode:
 
     debug_payloads = st.session_state.get("last_debug")
     if debug_payloads:
+        with st.expander("Entity Bank (Debug)", expanded=False):
+            st.text(format_entity_bank(st.session_state.entity_bank))
+
         with st.expander("Logic Engine Prompts + Response", expanded=False):
             st.json(debug_payloads["logic"]["messages"])
             st.code(debug_payloads["logic"]["response"] or "", language="text")
