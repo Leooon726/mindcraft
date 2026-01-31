@@ -811,10 +811,14 @@ st.markdown(
   padding: 0.6rem 0.9rem;
   background-color: #f3f5f9;
 }
-[data-testid="stChatMessage"][data-role="user"] [data-testid="stChatMessageContent"] {
+[data-testid="stChatMessage"].stChatMessage--user [data-testid="stChatMessageContent"],
+[data-testid="stChatMessage"][data-message-author="user"] [data-testid="stChatMessageContent"],
+.stChatMessage.stChatMessage--user .stChatMessageContent {
   background-color: #e8f0ff;
 }
-[data-testid="stChatMessage"][data-role="assistant"] [data-testid="stChatMessageContent"] {
+[data-testid="stChatMessage"].stChatMessage--assistant [data-testid="stChatMessageContent"],
+[data-testid="stChatMessage"][data-message-author="assistant"] [data-testid="stChatMessageContent"],
+.stChatMessage.stChatMessage--assistant .stChatMessageContent {
   background-color: #f3f5f9;
 }
 </style>
