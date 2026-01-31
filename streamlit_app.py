@@ -415,11 +415,10 @@ if not openai_api_key:
     st.info("Enter your API key to start playing.")
 
 turn_info = f"Turn {st.session_state.turn_count}/{selected_level['max_turns']}"
-st.subheader(selected_level["title"])
-st.caption(
-    f"Target model: {selected_level['target_model']} | "
-    f"Victory: {selected_level['victory_condition']} | {turn_info}"
+st.subheader(
+    f"{selected_level['title']} · {selected_level['target_model']}"
 )
+st.caption(turn_info)
 
 if st.session_state.game_over:
     if st.session_state.status == "won":
