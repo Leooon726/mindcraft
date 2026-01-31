@@ -9,7 +9,7 @@ from openai import OpenAI
 LEVELS_DIR = Path(__file__).parent / "levels"
 ACTION_TYPES = ["Observe", "Talk", "Action", "Think"]
 DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
-DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 
 GLOBAL_CONTEXT = (
     "You are part of a MindCraft thinking training system. "
@@ -31,9 +31,9 @@ def resolve_base_url(model_name: str) -> str | None:
     env_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
     if env_base_url:
         return env_base_url
-    if model_name.strip().lower().startswith("deepseek"):
-        return DEFAULT_DEEPSEEK_BASE_URL
-    return None
+    if model_name.strip():
+        return DEFAULT_BASE_URL
+    return DEFAULT_BASE_URL
 
 
 def load_level_configs() -> list[dict]:
@@ -353,14 +353,14 @@ with st.sidebar:
     st.header("MindCraft")
     default_api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY", "")
     openai_api_key = st.text_input(
-        "OpenAI API Key",
+        "API Key",
         type="password",
         value=default_api_key,
     )
     model_name = st.text_input("Model", value=DEFAULT_MODEL)
     st.caption(
-        "Base URL uses OPENAI_BASE_URL if set. Deepseek models default to "
-        f"{DEFAULT_DEEPSEEK_BASE_URL}."
+        "Base URL uses OPENAI_BASE_URL if set. Default: "
+        f"{DEFAULT_BASE_URL}."
     )
     level_titles = [
         f"{config['title']} - {config['target_model']}" for config in level_configs
