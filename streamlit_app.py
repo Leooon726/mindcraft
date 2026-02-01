@@ -10,7 +10,7 @@ from openai import OpenAI
 
 
 LEVELS_DIR = Path(__file__).parent / "levels"
-ACTION_TYPES = ["观察", "对话", "动作", "思考", "提示"]
+ACTION_TYPES = ["观察", "对话", "动作", "思考", "提示", "提前结束"]
 DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
 DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 ENTITY_KEYS = ["people", "projects", "locations", "organizations", "assets"]
@@ -658,6 +658,80 @@ def process_turn(
             }
         )
         return
+    if action_type == "提前结束":
+        end_request = user_input.strip() or "请求提前结束游戏。"
+        st.session_state.history.append(
+            {
+                "role": "user",
+                "content": end_request,
+                "normalized_content": end_request,
+                "action_type": action_type,
+            }
+        )
+        st.session_state.history.append(
+            {
+                "role": "assistant",
+                "content": "你选择提前结束本次挑战，进入复盘环节。",
+            }
+        )
+        st.session_state.game_log.append(
+            {
+                "turn": st.session_state.turn_count,
+                "action_type": action_type,
+                "user_input": end_request,
+                "note": "User requested early termination.",
+            }
+        )
+        st.session_state.game_over = True
+        st.session_state.status = "lost"
+        mentor_messages = [
+            {"role": "system", "content": build_mentor_prompt()},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "level": level_config,
+                        "final_status": st.session_state.status,
+                        "history": st.session_state.history,
+                        "game_log": st.session_state.game_log,
+                        "reason": "User ended the game early.",
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        st.session_state.last_debug = {
+            "logic": {"messages": None, "response": None},
+            "narrator": {"messages": None, "response": None},
+            "mentor": {"messages": mentor_messages, "response": None},
+            "hint": {"messages": None, "response": None},
+        }
+        try:
+            if status_placeholder:
+                status_placeholder.empty()
+                with status_placeholder.container():
+                    with st.spinner("影子导师正在复盘..."):
+                        mentor_text = call_chat_completion(
+                            client,
+                            model,
+                            mentor_messages,
+                            temperature=0.4,
+                        )
+            else:
+                with st.spinner("影子导师正在复盘..."):
+                    mentor_text = call_chat_completion(
+                        client,
+                        model,
+                        mentor_messages,
+                        temperature=0.4,
+                    )
+            st.session_state.mentor_report = mentor_text
+            st.session_state.last_debug["mentor"]["response"] = mentor_text
+        except Exception:
+            st.error("影子导师请求失败，请稍后重试。")
+            st.session_state.mentor_report = "影子导师暂时不可用。"
+            st.session_state.last_debug["mentor"]["response"] = "ERROR"
+        return
 
     next_turn = st.session_state.turn_count + 1
     history_summary = summarize_history(st.session_state.history)
@@ -1060,7 +1134,7 @@ if submitted:
     if not openai_api_key:
         st.warning("Please provide an API key before sending.")
         st.stop()
-    if action_type != "提示" and not user_input.strip():
+    if action_type not in {"提示", "提前结束"} and not user_input.strip():
         st.warning("Please enter a valid instruction.")
         st.stop()
 
@@ -1098,15 +1172,27 @@ if debug_mode:
                 st.json(hint_debug["messages"])
                 st.code(hint_debug["response"] or "", language="text")
 
+        logic_debug = debug_payloads.get("logic")
         with st.expander("Logic Engine Prompts + Response", expanded=False):
-            st.json(debug_payloads["logic"]["messages"])
-            st.code(debug_payloads["logic"]["response"] or "", language="text")
+            if logic_debug and logic_debug.get("messages"):
+                st.json(logic_debug["messages"])
+                st.code(logic_debug["response"] or "", language="text")
+            else:
+                st.text("No logic debug data.")
 
+        narrator_debug = debug_payloads.get("narrator")
         with st.expander("Narrator Prompts + Response", expanded=False):
-            st.json(debug_payloads["narrator"]["messages"])
-            st.code(debug_payloads["narrator"]["response"] or "", language="text")
+            if narrator_debug and narrator_debug.get("messages"):
+                st.json(narrator_debug["messages"])
+                st.code(narrator_debug["response"] or "", language="text")
+            else:
+                st.text("No narrator debug data.")
 
+        mentor_debug = debug_payloads.get("mentor")
         with st.expander("Shadow Mentor Prompts + Response", expanded=False):
-            st.json(debug_payloads["mentor"]["messages"])
-            st.code(debug_payloads["mentor"]["response"] or "", language="text")
+            if mentor_debug and mentor_debug.get("messages"):
+                st.json(mentor_debug["messages"])
+                st.code(mentor_debug["response"] or "", language="text")
+            else:
+                st.text("No mentor debug data.")
 
