@@ -13,6 +13,7 @@ LEVELS_DIR = Path(__file__).parent / "levels"
 ACTION_TYPES = ["观察", "对话", "动作", "思考", "提示", "提前结束"]
 DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
 DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
+DEFAULT_CHALLENGE_LIMIT = 3
 ENTITY_KEYS = ["people", "projects", "locations", "organizations", "assets"]
 
 GLOBAL_CONTEXT = (
@@ -146,6 +147,7 @@ def build_level_builder_prompt() -> str:
         '  "intro": "...",\n'
         '  "victory_condition": "...",\n'
         '  "max_turns": 10,\n'
+        '  "challenge_limit": 3,\n'
         '  "model_explanation": {\n'
         '    "definition": "...",\n'
         '    "example": "...",\n'
@@ -209,6 +211,12 @@ def normalize_level_config(
     if not victory_condition:
         victory_condition = "依据目标思维模型做出关键决策并控制风险。"
 
+    challenge_limit = raw_level.get("challenge_limit", DEFAULT_CHALLENGE_LIMIT)
+    try:
+        challenge_limit = int(challenge_limit)
+    except (TypeError, ValueError):
+        challenge_limit = DEFAULT_CHALLENGE_LIMIT
+
     model_explanation = raw_level.get("model_explanation", {})
     if not isinstance(model_explanation, (dict, str)):
         model_explanation = {}
@@ -225,6 +233,7 @@ def normalize_level_config(
         "target_model": target_model,
         "victory_condition": victory_condition,
         "max_turns": max_turns,
+        "challenge_limit": challenge_limit,
         "model_explanation": model_explanation,
         "setting": setting_text,
     }
@@ -295,6 +304,8 @@ def load_level_configs() -> list[dict]:
                 data["level_id"] = path.stem
             if "max_turns" not in data:
                 data["max_turns"] = 10
+            if "challenge_limit" not in data:
+                data["challenge_limit"] = DEFAULT_CHALLENGE_LIMIT
             configs.append(data)
         except (OSError, json.JSONDecodeError):
             continue
@@ -313,6 +324,10 @@ def reset_game(level_config: dict) -> None:
     st.session_state.entity_bank = normalize_entity_bank(
         level_config.get("entities", {})
     )
+    st.session_state.challenge_count = 0
+    st.session_state.challenge_limit = int(
+        level_config.get("challenge_limit", DEFAULT_CHALLENGE_LIMIT)
+    )
     st.session_state.selected_level_id = level_config["level_id"]
 
 
@@ -324,6 +339,13 @@ def ensure_game_state(level_config: dict) -> None:
     if "history" not in st.session_state:
         reset_game(level_config)
         return
+
+    if "challenge_count" not in st.session_state:
+        st.session_state.challenge_count = 0
+    if "challenge_limit" not in st.session_state:
+        st.session_state.challenge_limit = int(
+            level_config.get("challenge_limit", DEFAULT_CHALLENGE_LIMIT)
+        )
 
     if st.session_state.selected_level_id != level_config["level_id"]:
         reset_game(level_config)
@@ -430,6 +452,8 @@ def normalize_logic_result(
         "normalized_input": "",
         "corrections": [],
         "entities": {},
+        "introduce_challenge": False,
+        "challenge_note": "",
     }
     if not result:
         return defaults
@@ -496,6 +520,9 @@ def build_logic_prompt(level_config: dict) -> str:
         "   - 如果不确定，保留原词但给出可能的备选。\n"
         "6) 实体一致性：基于提供的entity_bank复用已有名称，\n"
         "   仅在必要时新增，并在输出的entities中给出最新实体表。\n"
+        "7) 挑战预算：全关最多引入3个新难题。\n"
+        "   - 用户payload会提供challenge_count与challenge_limit。\n"
+        "   - 当剩余额度<=0时，禁止引入新难题，应推动收束或成功。\n"
         "NON_EXPERT_PROTOCOL（非专业领域优先）：\n"
         "1) 聚焦思维模型而非行业执行：不要用财务/法律/运营细节否定正确思路。\n"
         "2) 意图通过制：只要用户的意图服务于正确思维方向，允许判定成功。\n"
@@ -515,6 +542,8 @@ def build_logic_prompt(level_config: dict) -> str:
         "- normalized_input: 纠正错别字后的用户意图文本\n"
         "- corrections: 列表，每项包含wrong/right/note\n"
         "- entities: 实体表，包含people/projects/locations/organizations/assets\n"
+        "- introduce_challenge: 是否引入新难题（true/false）\n"
+        "- challenge_note: 本回合是否新增难题的简短说明\n"
         "只输出JSON，不要额外文本。"
     )
 
@@ -528,7 +557,8 @@ def build_narrator_prompt() -> str:
         "- 1段为主，最多2段，整体不超过120字。\n"
         "- 严格遵循逻辑结果和提示。\n"
         "- 可以合理推进时间（如几天或几个月后）。\n"
-        "- 必须以明确的下一步困境或问题收尾，引导玩家行动。\n"
+        "- 仅在introduce_challenge为true且仍有挑战额度时，以困境问题收尾。\n"
+        "- 当挑战额度用尽时，只能推进、收束或达成结果，不再抛新难题。\n"
         "- 不要暴露JSON或内部评估备注。\n"
         "- 若游戏结束，用收束句收尾，不要继续提问。"
         "- 若logic_result提示意图通过，应给出正向结果并推进剧情。\n"
@@ -747,6 +777,8 @@ def process_turn(
         "victory_condition": level_config["victory_condition"],
         "recent_history": history_summary,
         "entity_bank": st.session_state.entity_bank,
+        "challenge_count": st.session_state.challenge_count,
+        "challenge_limit": st.session_state.challenge_limit,
     }
 
     logic_messages = [
@@ -805,6 +837,19 @@ def process_turn(
         st.session_state.entity_bank,
         logic_entities,
     )
+    introduce_challenge = bool(logic_result.get("introduce_challenge"))
+    if st.session_state.challenge_count >= st.session_state.challenge_limit:
+        introduce_challenge = False
+        logic_result["introduce_challenge"] = False
+        if not logic_result.get("challenge_note"):
+            logic_result["challenge_note"] = "挑战额度已用尽。"
+    if introduce_challenge:
+        st.session_state.challenge_count += 1
+    challenge_remaining = max(
+        0,
+        st.session_state.challenge_limit - st.session_state.challenge_count,
+    )
+    logic_result["challenge_remaining"] = challenge_remaining
     logic_result["entities"] = st.session_state.entity_bank
     st.session_state.last_logic = {"raw": logic_raw, "parsed": logic_result}
     st.session_state.game_log.append(
@@ -815,6 +860,8 @@ def process_turn(
             "normalized_input": normalized_input,
             "corrections": corrections,
             "entities": st.session_state.entity_bank,
+            "challenge_count": st.session_state.challenge_count,
+            "challenge_limit": st.session_state.challenge_limit,
             "logic_raw": logic_raw,
             "logic_result": logic_result,
         }
@@ -842,6 +889,9 @@ def process_turn(
                     "logic_result": logic_result,
                     "turn": next_turn,
                     "entity_bank": st.session_state.entity_bank,
+                    "challenge_count": st.session_state.challenge_count,
+                    "challenge_limit": st.session_state.challenge_limit,
+                    "challenge_remaining": challenge_remaining,
                 },
                 ensure_ascii=False,
             ),
@@ -1168,6 +1218,10 @@ if debug_mode:
     if debug_payloads:
         with st.expander("Entity Bank (Debug)", expanded=False):
             st.text(format_entity_bank(st.session_state.entity_bank))
+            st.text(
+                f"挑战额度：{st.session_state.challenge_count}/"
+                f"{st.session_state.challenge_limit}"
+            )
 
         hint_debug = debug_payloads.get("hint")
         if hint_debug and hint_debug.get("messages"):
