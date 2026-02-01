@@ -924,7 +924,6 @@ if create_submitted:
         st.stop()
     save_level_config(generated_level)
     st.session_state["pending_level_id"] = generated_level["level_id"]
-    st.session_state.selected_level_id = generated_level["level_id"]
     st.success("关卡已创建并写入配置。")
     st.rerun()
 
