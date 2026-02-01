@@ -98,25 +98,23 @@ def render_model_explanation(explanation) -> None:
     st.markdown("暂无说明。")
 
 
-def format_setting(setting: dict) -> str:
+def format_setting(setting) -> str:
+    if isinstance(setting, str):
+        return setting.strip()
     if not isinstance(setting, dict):
         return ""
     parts = []
-    scene = setting.get("scene", "").strip()
-    background = setting.get("background", "").strip()
-    roles = setting.get("roles", "").strip()
-    era = setting.get("era", "").strip()
-    extra = setting.get("extra_requirements", "").strip()
-    if scene:
-        parts.append(f"场景：{scene}")
-    if background:
-        parts.append(f"背景：{background}")
-    if roles:
-        parts.append(f"角色：{roles}")
-    if era:
-        parts.append(f"时代：{era}")
-    if extra:
-        parts.append(f"要求：{extra}")
+    labels = {
+        "scene": "场景",
+        "background": "背景",
+        "roles": "角色",
+        "era": "时代",
+        "extra_requirements": "要求",
+    }
+    for key, label in labels.items():
+        value = str(setting.get(key, "")).strip()
+        if value:
+            parts.append(f"{label}：{value}")
     return "；".join(parts)
 
 
@@ -154,13 +152,7 @@ def build_level_builder_prompt() -> str:
         '    "pitfall": "...",\n'
         '    "advice": "..." \n'
         "  },\n"
-        '  "setting": {\n'
-        '    "scene": "...",\n'
-        '    "background": "...",\n'
-        '    "roles": "...",\n'
-        '    "era": "...",\n'
-        '    "extra_requirements": "..." \n'
-        "  }\n"
+        '  "setting": "用户设定的场景/背景/角色/时代/要求，合并为一段文字"\n'
         "}\n"
         "要求：\n"
         "- 全中文输出，命名具体，禁止使用“项目A/B”等抽象代号。\n"
@@ -188,16 +180,14 @@ def parse_level_json(raw_text: str) -> dict | None:
     return data
 
 
-def merge_setting(user_setting: dict, generated_setting: dict) -> dict:
-    merged = {}
-    for key in ["scene", "background", "roles", "era", "extra_requirements"]:
-        value = ""
-        if isinstance(generated_setting, dict):
-            value = str(generated_setting.get(key, "")).strip()
-        if not value:
-            value = str(user_setting.get(key, "")).strip()
-        merged[key] = value
-    return merged
+def merge_setting_text(user_text: str, generated_setting) -> str:
+    generated_text = format_setting(generated_setting)
+    user_text = user_text.strip()
+    if generated_text and user_text:
+        if user_text in generated_text:
+            return generated_text
+        return f"{generated_text}；补充：{user_text}"
+    return generated_text or user_text
 
 
 def normalize_level_config(
@@ -205,7 +195,7 @@ def normalize_level_config(
     target_model: str,
     title_hint: str,
     max_turns: int,
-    user_setting: dict,
+    user_setting_text: str,
 ) -> dict:
     title = str(raw_level.get("title", "")).strip() or title_hint.strip()
     if not title:
@@ -223,7 +213,7 @@ def normalize_level_config(
     if not isinstance(model_explanation, (dict, str)):
         model_explanation = {}
 
-    setting = merge_setting(user_setting, raw_level.get("setting", {}))
+    setting_text = merge_setting_text(user_setting_text, raw_level.get("setting", ""))
     level_id = ensure_unique_level_id(
         slugify_level_id(title or target_model or "level")
     )
@@ -236,7 +226,7 @@ def normalize_level_config(
         "victory_condition": victory_condition,
         "max_turns": max_turns,
         "model_explanation": model_explanation,
-        "setting": setting,
+        "setting": setting_text,
     }
 
 
@@ -245,13 +235,13 @@ def generate_level_config(
     model: str,
     target_model: str,
     title_hint: str,
-    user_setting: dict,
+    user_setting_text: str,
     max_turns: int,
 ) -> tuple[dict | None, str]:
     payload = {
         "target_model": target_model,
         "title_hint": title_hint,
-        "setting": user_setting,
+        "setting": user_setting_text,
         "max_turns": max_turns,
     }
     messages = [
@@ -268,7 +258,7 @@ def generate_level_config(
             target_model=target_model,
             title_hint=title_hint,
             max_turns=max_turns,
-            user_setting=user_setting,
+            user_setting_text=user_setting_text,
         ),
         raw,
     )
@@ -619,7 +609,7 @@ def process_turn(
             "model_explanation": format_model_explanation(
                 get_model_explanation(level_config)
             ),
-            "setting": level_config.get("setting", {}),
+            "setting": format_setting(level_config.get("setting", "")),
             "recent_history": summarize_history(st.session_state.history),
             "entity_bank": st.session_state.entity_bank,
         }
@@ -934,7 +924,7 @@ with st.sidebar:
     default_api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY", "")
     openai_api_key = st.text_input(
         "API Key",
-        type="password",
+        type="default",
         value=default_api_key,
     )
     model_name = st.text_input("Model", value=DEFAULT_MODEL)
@@ -958,11 +948,10 @@ with st.sidebar:
         with st.form("create_level_form"):
             new_title_hint = st.text_input("关卡标题（可选）")
             new_model_name = st.text_input("思维模型名称（必填）")
-            new_scene = st.text_input("场景（可选）")
-            new_background = st.text_input("背景（可选）")
-            new_roles = st.text_input("角色（可选）")
-            new_era = st.text_input("时代（可选）")
-            new_requirements = st.text_area("附加要求（可选）", height=120)
+            new_setting_text = st.text_area(
+                "场景/背景/角色/时代/要求（可选）",
+                height=160,
+            )
             new_max_turns = st.number_input(
                 "最大回合数",
                 min_value=3,
@@ -985,20 +974,14 @@ if create_submitted:
     if resolved_base_url:
         client_kwargs["base_url"] = resolved_base_url
     client = OpenAI(**client_kwargs)
-    setting = {
-        "scene": new_scene.strip(),
-        "background": new_background.strip(),
-        "roles": new_roles.strip(),
-        "era": new_era.strip(),
-        "extra_requirements": new_requirements.strip(),
-    }
+    setting_text = new_setting_text.strip()
     with st.spinner("正在生成关卡..."):
         generated_level, raw_response = generate_level_config(
             client=client,
             model=create_model,
             target_model=new_model_name.strip(),
             title_hint=new_title_hint.strip(),
-            user_setting=setting,
+            user_setting_text=setting_text,
             max_turns=int(new_max_turns),
         )
     if not generated_level:
