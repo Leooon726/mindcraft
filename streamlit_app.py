@@ -10,7 +10,7 @@ from openai import OpenAI
 
 
 LEVELS_DIR = Path(__file__).parent / "levels"
-ACTION_TYPES = ["Observe", "Talk", "Action", "Think"]
+ACTION_TYPES = ["观察", "对话", "动作", "思考", "提示"]
 DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
 DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 ENTITY_KEYS = ["people", "projects", "locations", "organizations", "assets"]
@@ -500,7 +500,7 @@ def build_logic_prompt(level_config: dict) -> str:
         "任务：\n"
         "1) 分析用户意图。\n"
         "2) 判断是否符合现实物理规则。\n"
-        "3) 判断是否符合目标思维模型，尤其是Think动作。\n"
+        "3) 判断是否符合目标思维模型，尤其是“思考”动作。\n"
         "4) 更新游戏状态并给叙事者提示。\n"
         "5) 识别错别字或误拼写，推断用户本意，并给出修正结果。\n"
         "   - 如果不确定，保留原词但给出可能的备选。\n"
@@ -577,6 +577,20 @@ def build_mentor_prompt() -> str:
     )
 
 
+def build_hint_prompt() -> str:
+    return (
+        f"{GLOBAL_CONTEXT}\n"
+        "角色：你是提示官（助教）。给玩家提供可执行的提示，但不要直接给答案。\n"
+        "要求：\n"
+        "- 输出2到4条要点，使用项目符号。\n"
+        "- 不要直接泄露胜利条件或唯一最优解。\n"
+        "- 基于现有实体名词（entity_bank）与场景设定给出建议。\n"
+        "- 提醒玩家需要收集的信息或可能的风险。\n"
+        "- 可以建议使用[观察]/[对话]/[动作]/[思考]等方式推进。\n"
+        "- 使用中文。"
+    )
+
+
 def process_turn(
     client: OpenAI,
     model: str,
@@ -585,6 +599,76 @@ def process_turn(
     user_input: str,
     status_placeholder=None,
 ) -> None:
+    if action_type == "提示":
+        hint_request = user_input.strip() or "我需要提示。"
+        st.session_state.history.append(
+            {
+                "role": "user",
+                "content": hint_request,
+                "normalized_content": hint_request,
+                "action_type": action_type,
+            }
+        )
+        hint_payload = {
+            "action_type": action_type,
+            "user_request": hint_request,
+            "turn": st.session_state.turn_count,
+            "max_turns": level_config["max_turns"],
+            "current_status": st.session_state.status,
+            "target_model": level_config["target_model"],
+            "model_explanation": format_model_explanation(
+                get_model_explanation(level_config)
+            ),
+            "setting": level_config.get("setting", {}),
+            "recent_history": summarize_history(st.session_state.history),
+            "entity_bank": st.session_state.entity_bank,
+        }
+        hint_messages = [
+            {"role": "system", "content": build_hint_prompt()},
+            {"role": "user", "content": json.dumps(hint_payload, ensure_ascii=False)},
+        ]
+        st.session_state.last_debug = {
+            "logic": {"messages": None, "response": None},
+            "narrator": {"messages": None, "response": None},
+            "mentor": {"messages": None, "response": None},
+            "hint": {"messages": hint_messages, "response": None},
+        }
+        try:
+            if status_placeholder:
+                status_placeholder.empty()
+                with status_placeholder.container():
+                    with st.spinner("提示生成中..."):
+                        hint_text = call_chat_completion(
+                            client,
+                            model,
+                            hint_messages,
+                            temperature=0.5,
+                        )
+            else:
+                with st.spinner("提示生成中..."):
+                    hint_text = call_chat_completion(
+                        client,
+                        model,
+                        hint_messages,
+                        temperature=0.5,
+                    )
+            st.session_state.last_debug["hint"]["response"] = hint_text
+        except Exception:
+            st.error("提示生成失败，请稍后重试。")
+            hint_text = "提示暂时不可用。"
+            st.session_state.last_debug["hint"]["response"] = "ERROR"
+
+        st.session_state.history.append({"role": "assistant", "content": hint_text})
+        st.session_state.game_log.append(
+            {
+                "turn": st.session_state.turn_count,
+                "action_type": action_type,
+                "user_input": hint_request,
+                "hint_response": hint_text,
+            }
+        )
+        return
+
     next_turn = st.session_state.turn_count + 1
     history_summary = summarize_history(st.session_state.history)
     logic_payload = {
@@ -606,6 +690,7 @@ def process_turn(
         "logic": {"messages": logic_messages, "response": None},
         "narrator": {"messages": None, "response": None},
         "mentor": {"messages": None, "response": None},
+        "hint": {"messages": None, "response": None},
     }
 
     try:
@@ -992,7 +1077,7 @@ if submitted:
     if not openai_api_key:
         st.warning("Please provide an API key before sending.")
         st.stop()
-    if not user_input.strip():
+    if action_type != "提示" and not user_input.strip():
         st.warning("Please enter a valid instruction.")
         st.stop()
 
@@ -1023,6 +1108,12 @@ if debug_mode:
     if debug_payloads:
         with st.expander("Entity Bank (Debug)", expanded=False):
             st.text(format_entity_bank(st.session_state.entity_bank))
+
+        hint_debug = debug_payloads.get("hint")
+        if hint_debug and hint_debug.get("messages"):
+            with st.expander("Hint Prompts + Response", expanded=False):
+                st.json(hint_debug["messages"])
+                st.code(hint_debug["response"] or "", language="text")
 
         with st.expander("Logic Engine Prompts + Response", expanded=False):
             st.json(debug_payloads["logic"]["messages"])
