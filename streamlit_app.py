@@ -72,6 +72,23 @@ def get_model_explanation(level_config: dict):
     return MODEL_DEFINITIONS.get(level_config.get("target_model", ""))
 
 
+def parse_target_model_input(raw_text: str) -> tuple[str, str]:
+    text = raw_text.strip()
+    if not text:
+        return "", ""
+    if "\n" in text:
+        name, hint = text.split("\n", 1)
+        return name.strip(), hint.strip()
+    for sep in ["：", ":", " - ", " — ", "｜", "|"]:
+        if sep in text:
+            name, hint = text.split(sep, 1)
+            name = name.strip()
+            hint = hint.strip()
+            if name and hint:
+                return name, hint
+    return text, ""
+
+
 def normalize_text_list(value) -> list[str]:
     if isinstance(value, list):
         items = [str(item).strip() for item in value]
@@ -180,6 +197,7 @@ def build_export_markdown(level_config: dict) -> str:
     intro = level_config.get("intro", "")
     victory = level_config.get("victory_condition", "")
     setting_text = format_setting(level_config.get("setting", ""))
+    model_hint = str(level_config.get("model_hint", "")).strip()
     explanation = format_model_explanation_markdown(
         get_model_explanation(level_config)
     )
@@ -188,6 +206,7 @@ def build_export_markdown(level_config: dict) -> str:
         "",
         "## 关卡信息",
         f"- 目标能力/策略：{target_model}",
+        f"- 能力补充说明：{model_hint or '无'}",
         f"- 胜利条件：{victory}",
         f"- 最大回合：{level_config.get('max_turns', '')}",
         f"- 挑战额度：{st.session_state.get('challenge_count', '')}"
@@ -289,6 +308,7 @@ def build_level_builder_prompt() -> str:
         "- 引入现实复杂性、认知迷雾与人际摩擦。\n"
         "- model_explanation每项2-4句，包含一个简单案例。\n"
         "- triggers/steps/success_signals各给3-5条。\n"
+        "- 若提供model_hint，需将其融入解释与案例中。\n"
         "- victory_condition要可判定但不要直接照抄用户输入。\n"
     )
 
@@ -326,6 +346,7 @@ def normalize_level_config(
     title_hint: str,
     max_turns: int,
     user_setting_text: str,
+    model_hint: str,
 ) -> dict:
     title = str(raw_level.get("title", "")).strip() or title_hint.strip()
     if not title:
@@ -348,6 +369,7 @@ def normalize_level_config(
     model_explanation = raw_level.get("model_explanation", {})
     if not isinstance(model_explanation, (dict, str)):
         model_explanation = {}
+    model_hint = model_hint.strip()
 
     setting_text = merge_setting_text(user_setting_text, raw_level.get("setting", ""))
     level_id = ensure_unique_level_id(
@@ -363,6 +385,7 @@ def normalize_level_config(
         "max_turns": max_turns,
         "challenge_limit": challenge_limit,
         "model_explanation": model_explanation,
+        "model_hint": model_hint,
         "setting": setting_text,
     }
 
@@ -373,10 +396,12 @@ def generate_level_config(
     target_model: str,
     title_hint: str,
     user_setting_text: str,
+    model_hint: str,
     max_turns: int,
 ) -> tuple[dict | None, str]:
     payload = {
         "target_model": target_model,
+        "model_hint": model_hint,
         "title_hint": title_hint,
         "setting": user_setting_text,
         "max_turns": max_turns,
@@ -396,6 +421,7 @@ def generate_level_config(
             title_hint=title_hint,
             max_turns=max_turns,
             user_setting_text=user_setting_text,
+            model_hint=model_hint,
         ),
         raw,
     )
@@ -627,6 +653,7 @@ def build_logic_prompt(level_config: dict) -> str:
     model_explanation = format_model_explanation(get_model_explanation(level_config))
     if not model_explanation:
         model_explanation = "请根据目标能力/策略做出合理判定。"
+    model_hint = str(level_config.get("model_hint", "")).strip()
     setting_text = format_setting(level_config.get("setting", {}))
     return (
         f"{GLOBAL_CONTEXT}\n"
@@ -636,6 +663,7 @@ def build_logic_prompt(level_config: dict) -> str:
         f"- 开场：{level_config['intro']}\n"
         f"- 目标能力/策略：{level_config['target_model']}\n"
         f"- 能力说明：{model_explanation}\n"
+        f"- 能力补充说明：{model_hint or '无'}\n"
         f"- 胜利条件：{level_config['victory_condition']}\n"
         f"- 最大回合：{level_config['max_turns']}\n"
         f"- 补充设定：{setting_text}\n"
@@ -1214,7 +1242,10 @@ with st.sidebar:
     with st.expander("Create New Level", expanded=False):
         with st.form("create_level_form"):
             new_title_hint = st.text_input("关卡标题（可选）")
-            new_model_name = st.text_input("能力/策略名称（必填）")
+            new_model_name = st.text_input(
+                "能力/策略名称（必填）",
+                help="可输入“名称”或“名称：简要释义”。也可用换行分隔说明。",
+            )
             new_setting_text = st.text_area(
                 "场景/背景/角色/时代/要求（可选）",
                 height=160,
@@ -1249,7 +1280,9 @@ with st.sidebar:
             )
 
 if create_submitted:
-    if not new_model_name.strip():
+    model_name_raw = new_model_name.strip()
+    model_name_clean, model_hint = parse_target_model_input(model_name_raw)
+    if not model_name_clean:
         st.warning("请填写能力/策略名称。")
         st.stop()
     if not openai_api_key:
@@ -1266,9 +1299,10 @@ if create_submitted:
         generated_level, raw_response = generate_level_config(
             client=client,
             model=create_model,
-            target_model=new_model_name.strip(),
+            target_model=model_name_clean,
             title_hint=new_title_hint.strip(),
             user_setting_text=setting_text,
+            model_hint=model_hint,
             max_turns=int(new_max_turns),
         )
     if not generated_level:
