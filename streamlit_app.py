@@ -1242,8 +1242,9 @@ with st.sidebar:
     with st.expander("Create New Level", expanded=False):
         with st.form("create_level_form"):
             new_title_hint = st.text_input("关卡标题（可选）")
-            new_model_name = st.text_input(
+            new_model_name = st.text_area(
                 "能力/策略名称（必填）",
+                height=120,
                 help="可输入“名称”或“名称：简要释义”。也可用换行分隔说明。",
             )
             new_setting_text = st.text_area(
