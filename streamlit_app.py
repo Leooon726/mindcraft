@@ -17,10 +17,10 @@ DEFAULT_CHALLENGE_LIMIT = 3
 ENTITY_KEYS = ["people", "projects", "locations", "organizations", "assets"]
 
 GLOBAL_CONTEXT = (
-    "你是MindCraft思维训练系统的一部分。"
+    "你是MindCraft能力训练系统的一部分。"
     "世界观：严谨现实逻辑，无魔法。"
-    "核心机制：物理胜利必须由正确的思维驱动。"
-    "除非用户真正运用了目标思维模型，否则不要空泛表扬。"
+    "核心机制：物理胜利必须由正确的能力/策略运用驱动。"
+    "除非用户真正运用了目标能力/策略，否则不要空泛表扬。"
     "所有输出必须使用中文。"
 )
 
@@ -46,6 +46,21 @@ MODEL_DEFINITIONS = {
             "设立止损线与阶段性验收；"
             "区分情感承诺与商业回报。"
         ),
+        "triggers": [
+            "已投入大量时间/资金但回报迟迟不见",
+            "出现更优替代方案但情感难以割舍",
+            "团队或投资人以“已经投了很多”为由坚持继续",
+        ],
+        "steps": [
+            "区分已沉没成本与未来新增投入",
+            "用前瞻指标评估未来收益与风险",
+            "设定止损线并沟通执行路径",
+        ],
+        "success_signals": [
+            "决策理由基于未来价值而非过去投入",
+            "能清楚说明止损依据与替代方案",
+            "资源能被转向更高潜力方向",
+        ],
     }
 }
 
@@ -57,6 +72,15 @@ def get_model_explanation(level_config: dict):
     return MODEL_DEFINITIONS.get(level_config.get("target_model", ""))
 
 
+def normalize_text_list(value) -> list[str]:
+    if isinstance(value, list):
+        items = [str(item).strip() for item in value]
+        return [item for item in items if item]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
 def format_model_explanation(explanation) -> str:
     if isinstance(explanation, dict):
         parts = []
@@ -64,6 +88,9 @@ def format_model_explanation(explanation) -> str:
         example = explanation.get("example", "").strip()
         pitfall = explanation.get("pitfall", "").strip()
         advice = explanation.get("advice", "").strip()
+        triggers = normalize_text_list(explanation.get("triggers"))
+        steps = normalize_text_list(explanation.get("steps"))
+        success_signals = normalize_text_list(explanation.get("success_signals"))
         if definition:
             parts.append(f"定义：{definition}")
         if example:
@@ -72,6 +99,12 @@ def format_model_explanation(explanation) -> str:
             parts.append(f"常见误区：{pitfall}")
         if advice:
             parts.append(f"应用建议：{advice}")
+        if triggers:
+            parts.append(f"触发场景：{'；'.join(triggers)}")
+        if steps:
+            parts.append(f"核心步骤：{'；'.join(steps)}")
+        if success_signals:
+            parts.append(f"成功信号：{'；'.join(success_signals)}")
         return "\n".join(parts)
     if isinstance(explanation, str):
         return explanation.strip()
@@ -84,6 +117,9 @@ def render_model_explanation(explanation) -> None:
         example = explanation.get("example", "").strip()
         pitfall = explanation.get("pitfall", "").strip()
         advice = explanation.get("advice", "").strip()
+        triggers = normalize_text_list(explanation.get("triggers"))
+        steps = normalize_text_list(explanation.get("steps"))
+        success_signals = normalize_text_list(explanation.get("success_signals"))
         if definition:
             st.markdown(f"**定义**：{definition}")
         if example:
@@ -92,6 +128,15 @@ def render_model_explanation(explanation) -> None:
             st.markdown(f"**常见误区**：{pitfall}")
         if advice:
             st.markdown(f"**应用建议**：{advice}")
+        if triggers:
+            st.markdown("**触发场景**：")
+            st.markdown("\n".join([f"- {item}" for item in triggers]))
+        if steps:
+            st.markdown("**核心步骤**：")
+            st.markdown("\n".join([f"- {item}" for item in steps]))
+        if success_signals:
+            st.markdown("**成功信号**：")
+            st.markdown("\n".join([f"- {item}" for item in success_signals]))
         return
     if isinstance(explanation, str) and explanation.strip():
         st.markdown(explanation)
@@ -139,7 +184,7 @@ def ensure_unique_level_id(base_id: str) -> str:
 def build_level_builder_prompt() -> str:
     return (
         f"{GLOBAL_CONTEXT}\n"
-        "角色：你是MindCraft的关卡设计师。根据输入的思维模型与设定生成关卡JSON。\n"
+        "角色：你是MindCraft的关卡设计师。根据输入的能力/策略与设定生成关卡JSON。\n"
         "必须输出严格JSON，不要额外文字。\n"
         "JSON结构：\n"
         "{\n"
@@ -152,7 +197,10 @@ def build_level_builder_prompt() -> str:
         '    "definition": "...",\n'
         '    "example": "...",\n'
         '    "pitfall": "...",\n'
-        '    "advice": "..." \n'
+        '    "advice": "...",\n'
+        '    "triggers": ["..."],\n'
+        '    "steps": ["..."],\n'
+        '    "success_signals": ["..."]\n'
         "  },\n"
         '  "setting": "用户设定的场景/背景/角色/时代/要求，合并为一段文字"\n'
         "}\n"
@@ -161,6 +209,7 @@ def build_level_builder_prompt() -> str:
         "- intro使用第二人称，包含具体项目名、人物关系与业务数据。\n"
         "- 引入现实复杂性、认知迷雾与人际摩擦。\n"
         "- model_explanation每项2-4句，包含一个简单案例。\n"
+        "- triggers/steps/success_signals各给3-5条。\n"
         "- victory_condition要可判定但不要直接照抄用户输入。\n"
     )
 
@@ -209,7 +258,7 @@ def normalize_level_config(
 
     victory_condition = str(raw_level.get("victory_condition", "")).strip()
     if not victory_condition:
-        victory_condition = "依据目标思维模型做出关键决策并控制风险。"
+        victory_condition = "依据目标能力/策略做出关键决策并控制风险。"
 
     challenge_limit = raw_level.get("challenge_limit", DEFAULT_CHALLENGE_LIMIT)
     try:
@@ -498,7 +547,7 @@ def call_chat_completion(client: OpenAI, model: str, messages: list[dict], tempe
 def build_logic_prompt(level_config: dict) -> str:
     model_explanation = format_model_explanation(get_model_explanation(level_config))
     if not model_explanation:
-        model_explanation = "请根据目标思维模型做出合理判定。"
+        model_explanation = "请根据目标能力/策略做出合理判定。"
     setting_text = format_setting(level_config.get("setting", {}))
     return (
         f"{GLOBAL_CONTEXT}\n"
@@ -506,15 +555,15 @@ def build_logic_prompt(level_config: dict) -> str:
         "关卡信息：\n"
         f"- 标题：{level_config['title']}\n"
         f"- 开场：{level_config['intro']}\n"
-        f"- 目标模型：{level_config['target_model']}\n"
-        f"- 模型解释：{model_explanation}\n"
+        f"- 目标能力/策略：{level_config['target_model']}\n"
+        f"- 能力说明：{model_explanation}\n"
         f"- 胜利条件：{level_config['victory_condition']}\n"
         f"- 最大回合：{level_config['max_turns']}\n"
         f"- 补充设定：{setting_text}\n"
         "任务：\n"
         "1) 分析用户意图。\n"
         "2) 判断是否符合现实物理规则。\n"
-        "3) 判断是否符合目标思维模型，尤其是“思考”动作。\n"
+        "3) 判断是否符合目标能力/策略（优先看步骤与成功信号）。\n"
         "4) 更新游戏状态并给叙事者提示。\n"
         "5) 识别错别字或误拼写，推断用户本意，并给出修正结果。\n"
         "   - 如果不确定，保留原词但给出可能的备选。\n"
@@ -524,13 +573,13 @@ def build_logic_prompt(level_config: dict) -> str:
         "   - 用户payload会提供challenge_count与challenge_limit。\n"
         "   - 当剩余额度<=0时，禁止引入新难题，应推动收束或成功。\n"
         "NON_EXPERT_PROTOCOL（非专业领域优先）：\n"
-        "1) 聚焦思维模型而非行业执行：不要用财务/法律/运营细节否定正确思路。\n"
-        "2) 意图通过制：只要用户的意图服务于正确思维方向，允许判定成功。\n"
+        "1) 聚焦能力/策略而非行业执行：不要用财务/法律/运营细节否定正确思路。\n"
+        "2) 意图通过制：只要用户的意图服务于正确能力方向，允许判定成功。\n"
         "   - 例如“让团队调研可行性”“安抚关键成员”等，若方向正确，应给予正向结果。\n"
-        "3) 仅允许建设性失败：只有当用户违背目标思维模型时，才制造障碍。\n"
-        "   - 障碍必须是思维层面的反馈，而不是琐碎的执行问题。\n"
-        "HARD_MODE_JUDGMENT（仅在模型违背时才启用）：\n"
-        "- 当用户坚持错误思路或明显回避模型要点时，再加入挑战。\n"
+        "3) 仅允许建设性失败：只有当用户违背目标能力/策略时，才制造障碍。\n"
+        "   - 障碍必须是能力/策略层面的反馈，而不是琐碎的执行问题。\n"
+        "HARD_MODE_JUDGMENT（仅在能力违背时才启用）：\n"
+        "- 当用户坚持错误思路或明显回避能力要点时，再加入挑战。\n"
         "只返回JSON，字段如下：\n"
         "- outcome: success|fail|neutral\n"
         "- narrative_guidance: 给叙事者的中文提示\n"
@@ -566,7 +615,7 @@ def build_narrator_prompt() -> str:
         "1) 禁止抽象代号：不要使用“项目A/B”“某员工”等，必须使用具体项目名、具体业务数据、具体人物关系。\n"
         "2) 认知迷雾：被放弃的项目必须包含至少两个诱人的正面信号；新机会必须包含风险和不确定性。\n"
         "3) 情感钩子：让失败项目绑上情感/承诺/身份。\n"
-        "4) 展示而非说教：不要直接说“沉没成本陷阱”，要用细节呈现。\n"
+        "4) 展示而非说教：不要直接说“这是某模型的陷阱”，要用细节呈现。\n"
         "5) 人际摩擦：每个关键决策都要带出人际后果或对抗。\n"
         "\nSTRICT_POV_PROTOCOL（严格视角限制）：\n"
         "1) 禁止上帝视角：不要描述主角无法看到/听到/触碰的宏观事实。\n"
@@ -588,10 +637,10 @@ def build_mentor_prompt() -> str:
     return (
         f"{GLOBAL_CONTEXT}\n"
         "角色：你是影子导师。用Markdown写复盘分析。\n"
-        "聚焦思维模型，不要陷入行业执行细节。\n"
+        "聚焦能力/策略，不要陷入行业执行细节。\n"
         "必须包含以下小节：\n"
         "1) 总结\n"
-        "2) 模型运用\n"
+        "2) 能力运用\n"
         "3) 遗漏机会\n"
         "4) 下一步建议\n"
         "5) 参考解法（AI认为的更优选择与行动路径）\n"
@@ -608,7 +657,7 @@ def build_hint_prompt() -> str:
         "- 不要直接泄露胜利条件或唯一最优解。\n"
         "- 基于现有实体名词（entity_bank）与场景设定给出建议。\n"
         "- 提醒玩家需要收集的信息或可能的风险。\n"
-        "- 聚焦思维模型，不要陷入行业执行细节。\n"
+        "- 聚焦能力/策略，不要陷入行业执行细节。\n"
         "- 可以建议使用[观察]/[对话]/[动作]/[思考]等方式推进。\n"
         "- 使用中文。"
     )
@@ -1028,7 +1077,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<div class="app-title">MindCraft - Thinking Model Training Ground</div>',
+    '<div class="app-title">MindCraft - 能力训练场</div>',
     unsafe_allow_html=True,
 )
 
@@ -1074,7 +1123,7 @@ with st.sidebar:
     with st.expander("Create New Level", expanded=False):
         with st.form("create_level_form"):
             new_title_hint = st.text_input("关卡标题（可选）")
-            new_model_name = st.text_input("思维模型名称（必填）")
+            new_model_name = st.text_input("能力/策略名称（必填）")
             new_setting_text = st.text_area(
                 "场景/背景/角色/时代/要求（可选）",
                 height=160,
@@ -1090,7 +1139,7 @@ with st.sidebar:
 
 if create_submitted:
     if not new_model_name.strip():
-        st.warning("请填写思维模型名称。")
+        st.warning("请填写能力/策略名称。")
         st.stop()
     if not openai_api_key:
         st.warning("请先填写API Key，再创建关卡。")
@@ -1140,7 +1189,7 @@ st.markdown(
 )
 st.caption(turn_info)
 with st.expander(
-    f"思维模型解释：{selected_level['target_model']}",
+    f"能力/策略解释：{selected_level['target_model']}",
     expanded=False,
 ):
     render_model_explanation(get_model_explanation(selected_level))
