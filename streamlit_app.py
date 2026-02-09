@@ -144,6 +144,85 @@ def render_model_explanation(explanation) -> None:
     st.markdown("暂无说明。")
 
 
+def format_model_explanation_markdown(explanation) -> str:
+    if isinstance(explanation, dict):
+        parts = []
+        definition = explanation.get("definition", "").strip()
+        example = explanation.get("example", "").strip()
+        pitfall = explanation.get("pitfall", "").strip()
+        advice = explanation.get("advice", "").strip()
+        triggers = normalize_text_list(explanation.get("triggers"))
+        steps = normalize_text_list(explanation.get("steps"))
+        success_signals = normalize_text_list(explanation.get("success_signals"))
+        if definition:
+            parts.append(f"- **定义**：{definition}")
+        if example:
+            parts.append(f"- **简单案例**：{example}")
+        if pitfall:
+            parts.append(f"- **常见误区**：{pitfall}")
+        if advice:
+            parts.append(f"- **应用建议**：{advice}")
+        if triggers:
+            parts.append(f"- **触发场景**：{'；'.join(triggers)}")
+        if steps:
+            parts.append(f"- **核心步骤**：{'；'.join(steps)}")
+        if success_signals:
+            parts.append(f"- **成功信号**：{'；'.join(success_signals)}")
+        return "\n".join(parts)
+    if isinstance(explanation, str) and explanation.strip():
+        return explanation.strip()
+    return "暂无说明。"
+
+
+def build_export_markdown(level_config: dict) -> str:
+    title = level_config.get("title", "")
+    target_model = level_config.get("target_model", "")
+    intro = level_config.get("intro", "")
+    victory = level_config.get("victory_condition", "")
+    setting_text = format_setting(level_config.get("setting", ""))
+    explanation = format_model_explanation_markdown(
+        get_model_explanation(level_config)
+    )
+    lines = [
+        f"# {title}",
+        "",
+        "## 关卡信息",
+        f"- 目标能力/策略：{target_model}",
+        f"- 胜利条件：{victory}",
+        f"- 最大回合：{level_config.get('max_turns', '')}",
+        f"- 挑战额度：{st.session_state.get('challenge_count', '')}"
+        f"/{st.session_state.get('challenge_limit', '')}",
+        f"- 当前回合：{st.session_state.get('turn_count', '')}",
+        f"- 当前状态：{st.session_state.get('status', '')}",
+        "",
+        "## 背景介绍",
+        intro or "暂无",
+        "",
+    ]
+    if setting_text:
+        lines.extend(["## 场景设定", setting_text, ""])
+    lines.extend(["## 能力/策略解释", explanation, ""])
+    lines.append("## 对话记录")
+    history = st.session_state.get("history", [])
+    if history:
+        for entry in history:
+            if entry.get("role") == "user":
+                action_label = entry.get("action_type", "动作")
+                content = entry.get("normalized_content") or entry.get("content", "")
+                lines.append(f"- **你（{action_label}）**：{content}")
+            else:
+                lines.append(f"- **AI**：{entry.get('content', '')}")
+    else:
+        lines.append("- 暂无对话记录。")
+    lines.append("")
+    mentor_report = st.session_state.get("mentor_report")
+    if mentor_report:
+        lines.append("## 复盘报告")
+        lines.append(mentor_report)
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 def format_setting(setting) -> str:
     if isinstance(setting, str):
         return setting.strip()
@@ -1117,8 +1196,20 @@ with st.sidebar:
         format_func=lambda idx: level_titles[idx],
         key="level_selector",
     )
+    st.session_state.selected_level_config = level_configs[selected_index]
     debug_mode = st.toggle("Debug Mode", value=False)
     restart_clicked = st.button("Restart Game")
+
+    with st.expander("Advanced Settings", expanded=False):
+        challenge_limit_input = st.number_input(
+            "挑战额度上限",
+            min_value=0,
+            max_value=10,
+            value=int(st.session_state.get("challenge_limit", DEFAULT_CHALLENGE_LIMIT)),
+            step=1,
+            key="challenge_limit_input",
+        )
+        st.session_state.challenge_limit = int(challenge_limit_input)
 
     with st.expander("Create New Level", expanded=False):
         with st.form("create_level_form"):
@@ -1136,6 +1227,26 @@ with st.sidebar:
                 step=1,
             )
             create_submitted = st.form_submit_button("生成并创建关卡")
+
+    with st.expander("Export Session", expanded=False):
+        export_clicked = st.button("生成导出内容")
+        if export_clicked:
+            st.session_state.export_markdown = build_export_markdown(
+                st.session_state.get("selected_level_config", {})
+            )
+        export_markdown = st.session_state.get("export_markdown", "")
+        if export_markdown:
+            st.text_area(
+                "Markdown 内容（可复制）",
+                value=export_markdown,
+                height=240,
+            )
+            st.download_button(
+                "下载 Markdown 文件",
+                data=export_markdown,
+                file_name="mindcraft_session.md",
+                mime="text/markdown",
+            )
 
 if create_submitted:
     if not new_model_name.strip():
@@ -1171,7 +1282,7 @@ if create_submitted:
     st.success("关卡已创建并写入配置。")
     st.rerun()
 
-selected_level = level_configs[selected_index]
+selected_level = st.session_state.selected_level_config
 ensure_game_state(selected_level)
 if restart_clicked:
     reset_game(selected_level)
