@@ -198,6 +198,11 @@ def build_export_markdown(level_config: dict) -> str:
     victory = level_config.get("victory_condition", "")
     setting_text = format_setting(level_config.get("setting", ""))
     model_hint = str(level_config.get("model_hint", "")).strip()
+    score_count = int(st.session_state.get("score_count", 0))
+    if score_count > 0:
+        score_text = f"{format_score_text(st.session_state.get('current_score', 0.0))}/10"
+    else:
+        score_text = "未评分"
     explanation = format_model_explanation_markdown(
         get_model_explanation(level_config)
     )
@@ -212,7 +217,8 @@ def build_export_markdown(level_config: dict) -> str:
         f"- 挑战额度：{st.session_state.get('challenge_count', '')}"
         f"/{st.session_state.get('challenge_limit', '')}",
         f"- 当前回合：{st.session_state.get('turn_count', '')}",
-        f"- 当前状态：{st.session_state.get('status', '')}",
+        f"- 当前进度：{format_progress_status(st.session_state.get('status', 'active'))}",
+        f"- 当前评分：{score_text}",
         "",
         "## 背景介绍",
         intro or "暂无",
@@ -473,6 +479,9 @@ def reset_game(level_config: dict) -> None:
     st.session_state.turn_count = 0
     st.session_state.game_over = False
     st.session_state.status = "active"
+    st.session_state.score_total = 0.0
+    st.session_state.score_count = 0
+    st.session_state.current_score = 0.0
     st.session_state.mentor_report = None
     st.session_state.last_logic = None
     st.session_state.entity_bank = normalize_entity_bank(
@@ -500,6 +509,15 @@ def ensure_game_state(level_config: dict) -> None:
         st.session_state.challenge_limit = int(
             level_config.get("challenge_limit", DEFAULT_CHALLENGE_LIMIT)
         )
+    if "score_total" not in st.session_state:
+        st.session_state.score_total = 0.0
+    if "score_count" not in st.session_state:
+        st.session_state.score_count = 0
+    if "current_score" not in st.session_state:
+        st.session_state.current_score = 0.0
+    st.session_state.status = normalize_progress_status(
+        st.session_state.get("status", "active")
+    )
 
     if st.session_state.selected_level_id != level_config["level_id"]:
         reset_game(level_config)
@@ -518,6 +536,44 @@ def summarize_history(history: list[dict], limit: int = 6) -> str:
             continue
         lines.append(f"Narrator: {entry['content']}")
     return "\n".join(lines)
+
+
+def clamp_score(value: float) -> float:
+    return max(0.0, min(10.0, round(value, 1)))
+
+
+def hidden_score_to_turn_score(hidden_score: int) -> float:
+    # Keep scoring relaxed: neutral behavior should not be over-penalized.
+    return clamp_score(6.0 + hidden_score * 0.25)
+
+
+def format_score_text(score_value) -> str:
+    try:
+        score = float(score_value)
+    except (TypeError, ValueError):
+        score = 0.0
+    return f"{clamp_score(score):.1f}"
+
+
+def normalize_progress_status(status_value: str) -> str:
+    normalized = str(status_value or "active").strip().lower()
+    if normalized in {"won", "lost", "completed"}:
+        return "completed"
+    return "active"
+
+
+def format_progress_status(status_value: str) -> str:
+    if normalize_progress_status(status_value) == "completed":
+        return "已结束"
+    return "进行中"
+
+
+def update_running_score(turn_score: float) -> None:
+    score_total = float(st.session_state.get("score_total", 0.0)) + float(turn_score)
+    score_count = int(st.session_state.get("score_count", 0)) + 1
+    st.session_state.score_total = score_total
+    st.session_state.score_count = score_count
+    st.session_state.current_score = clamp_score(score_total / score_count)
 
 
 def normalize_entity_list(items) -> list[str]:
@@ -599,6 +655,7 @@ def normalize_logic_result(
         "outcome": "neutral",
         "narrative_guidance": "请用现实后果推进剧情。",
         "hidden_score": 0,
+        "score": 6.0,
         "game_over": False,
         "status": "active",
         "state_change": "",
@@ -615,28 +672,34 @@ def normalize_logic_result(
     merged = {**defaults, **result}
     if merged["outcome"] not in {"success", "fail", "neutral"}:
         merged["outcome"] = "neutral"
-    if merged["status"] not in {"active", "won", "lost"}:
-        merged["status"] = "active"
+    merged["status"] = normalize_progress_status(merged.get("status", "active"))
     if not isinstance(merged["hidden_score"], int):
         try:
             merged["hidden_score"] = int(merged["hidden_score"])
         except (ValueError, TypeError):
             merged["hidden_score"] = 0
+    score_value = merged.get("score")
+    if isinstance(score_value, (int, float)):
+        merged["score"] = clamp_score(float(score_value))
+    else:
+        merged["score"] = hidden_score_to_turn_score(merged["hidden_score"])
     merged["game_over"] = bool(merged["game_over"])
+    if merged["status"] == "completed" and not merged["game_over"]:
+        merged["game_over"] = True
 
     if turn_count >= max_turns and not merged["game_over"]:
         merged["game_over"] = True
-        merged["status"] = "lost"
+        merged["status"] = "completed"
         merged["narrative_guidance"] = (
             f"{merged['narrative_guidance']} "
-            "The game ends because the maximum turns were reached."
+            "回合已达上限，本次挑战进入结算。"
         )
         merged["internal_comment"] = (
             f"{merged['internal_comment']} | Forced game over by max turns."
         ).strip(" |")
 
     if merged["game_over"] and merged["status"] == "active":
-        merged["status"] = "won" if merged["outcome"] == "success" else "lost"
+        merged["status"] = "completed"
     return merged
 
 
@@ -671,19 +734,25 @@ def build_logic_prompt(level_config: dict) -> str:
         "1) 分析用户意图。\n"
         "2) 判断是否符合现实物理规则。\n"
         "3) 判断是否符合目标能力/策略（优先看步骤与成功信号）。\n"
-        "4) 更新游戏状态并给叙事者提示。\n"
+        "4) 更新游戏进度与评分，并给叙事者提示。\n"
         "5) 识别错别字或误拼写，推断用户本意，并给出修正结果。\n"
         "   - 如果不确定，保留原词但给出可能的备选。\n"
         "6) 实体一致性：基于提供的entity_bank复用已有名称，\n"
         "   仅在必要时新增，并在输出的entities中给出最新实体表。\n"
         "7) 挑战预算：全关最多引入3个新难题。\n"
         "   - 用户payload会提供challenge_count与challenge_limit。\n"
-        "   - 当剩余额度<=0时，禁止引入新难题，应推动收束或成功。\n"
+        "   - 当剩余额度<=0时，禁止引入新难题，应推动收束或完成。\n"
+        "8) 允许提前完成：当用户已满足大部分核心步骤/成功信号时，\n"
+        "   即使未到最大回合，也可设game_over=true且status=completed。\n"
+        "9) 评分口径偏宽松：\n"
+        "   - 方向正确且有实质推进时，score建议>=7。\n"
+        "   - 已形成具体可执行约定时，score建议>=8。\n"
+        "   - 只有明显违背目标能力时，才给低分（<6）。\n"
         "NON_EXPERT_PROTOCOL（非专业领域优先）：\n"
         "1) 聚焦能力/策略而非行业执行：不要用财务/法律/运营细节否定正确思路。\n"
-        "2) 意图通过制：只要用户的意图服务于正确能力方向，允许判定成功。\n"
+        "2) 意图通过制：只要用户的意图服务于正确能力方向，允许给出正向评分。\n"
         "   - 例如“让团队调研可行性”“安抚关键成员”等，若方向正确，应给予正向结果。\n"
-        "3) 仅允许建设性失败：只有当用户违背目标能力/策略时，才制造障碍。\n"
+        "3) 仅允许建设性受阻：只有当用户违背目标能力/策略时，才制造障碍。\n"
         "   - 障碍必须是能力/策略层面的反馈，而不是琐碎的执行问题。\n"
         "HARD_MODE_JUDGMENT（仅在能力违背时才启用）：\n"
         "- 当用户坚持错误思路或明显回避能力要点时，再加入挑战。\n"
@@ -691,8 +760,9 @@ def build_logic_prompt(level_config: dict) -> str:
         "- outcome: success|fail|neutral\n"
         "- narrative_guidance: 给叙事者的中文提示\n"
         "- hidden_score: 整数 -10..10\n"
+        "- score: 浮点数 0..10（本回合评分，优先使用此字段）\n"
         "- game_over: 布尔值\n"
-        "- status: active|won|lost\n"
+        "- status: active|completed\n"
         "- state_change: 简短状态变化\n"
         "- internal_comment: 简短评估备注\n"
         "- normalized_input: 纠正错别字后的用户意图文本\n"
@@ -744,8 +814,10 @@ def build_mentor_prompt() -> str:
     return (
         f"{GLOBAL_CONTEXT}\n"
         "角色：你是影子导师。用Markdown写复盘分析。\n"
+        "采用0~10评分制，不要给出成功/失败二元判定。\n"
         "聚焦能力/策略，不要陷入行业执行细节。\n"
         "必须包含以下小节：\n"
+        "0) 综合评分（0~10）\n"
         "1) 总结\n"
         "2) 能力运用\n"
         "3) 遗漏机会\n"
@@ -872,7 +944,7 @@ def process_turn(
             }
         )
         st.session_state.game_over = True
-        st.session_state.status = "lost"
+        st.session_state.status = "completed"
         mentor_messages = [
             {"role": "system", "content": build_mentor_prompt()},
             {
@@ -881,9 +953,13 @@ def process_turn(
                     {
                         "level": level_config,
                         "final_status": st.session_state.status,
+                        "final_score": format_score_text(
+                            st.session_state.get("current_score", 0.0)
+                        ),
+                        "scored_turns": st.session_state.get("score_count", 0),
                         "history": st.session_state.history,
                         "game_log": st.session_state.game_log,
-                        "reason": "User ended the game early.",
+                        "reason": "User ended the game early and requested score-based review.",
                     },
                     ensure_ascii=False,
                 ),
@@ -986,6 +1062,13 @@ def process_turn(
         corrections = []
     logic_result["normalized_input"] = normalized_input
     logic_result["corrections"] = corrections
+    turn_score_raw = logic_result.get("score")
+    if isinstance(turn_score_raw, (int, float)):
+        turn_score = clamp_score(float(turn_score_raw))
+    else:
+        turn_score = hidden_score_to_turn_score(logic_result["hidden_score"])
+    logic_result["score"] = turn_score
+    update_running_score(turn_score)
     logic_entities = logic_result.get("entities", {})
     if not isinstance(logic_entities, dict):
         logic_entities = {}
@@ -1018,6 +1101,8 @@ def process_turn(
             "entities": st.session_state.entity_bank,
             "challenge_count": st.session_state.challenge_count,
             "challenge_limit": st.session_state.challenge_limit,
+            "turn_score": turn_score,
+            "current_score": st.session_state.current_score,
             "logic_raw": logic_raw,
             "logic_result": logic_result,
         }
@@ -1083,7 +1168,7 @@ def process_turn(
     st.session_state.history.append({"role": "assistant", "content": narrative_text})
     st.session_state.turn_count = next_turn
     st.session_state.game_over = bool(logic_result["game_over"])
-    st.session_state.status = logic_result["status"]
+    st.session_state.status = normalize_progress_status(logic_result["status"])
 
     if not st.session_state.game_over:
         return
@@ -1096,6 +1181,10 @@ def process_turn(
                 {
                     "level": level_config,
                     "final_status": st.session_state.status,
+                    "final_score": format_score_text(
+                        st.session_state.get("current_score", 0.0)
+                    ),
+                    "scored_turns": st.session_state.get("score_count", 0),
                     "history": st.session_state.history,
                     "game_log": st.session_state.game_log,
                 },
@@ -1326,7 +1415,14 @@ if restart_clicked:
 if not openai_api_key:
     st.info("Enter your API key to start playing.")
 
-turn_info = f"Turn {st.session_state.turn_count}/{selected_level['max_turns']}"
+if st.session_state.get("score_count", 0) > 0:
+    score_display = f"{format_score_text(st.session_state.get('current_score', 0.0))}/10"
+else:
+    score_display = "未评分"
+turn_info = (
+    f"回合 {st.session_state.turn_count}/{selected_level['max_turns']} · "
+    f"进度：{format_progress_status(st.session_state.status)} · 当前评分：{score_display}"
+)
 level_title = html.escape(selected_level["title"])
 level_model = html.escape(selected_level["target_model"])
 st.markdown(
@@ -1341,10 +1437,8 @@ with st.expander(
     render_model_explanation(get_model_explanation(selected_level))
 
 if st.session_state.game_over:
-    if st.session_state.status == "won":
-        st.success("Game Over: Victory")
-    else:
-        st.error("Game Over: Defeat")
+    final_score = format_score_text(st.session_state.get("current_score", 0.0))
+    st.info(f"本次挑战已结束 · 综合得分：{final_score}/10")
 
 for entry in st.session_state.history:
     if entry["role"] == "user":
