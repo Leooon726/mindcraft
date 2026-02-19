@@ -14,6 +14,12 @@ ACTION_TYPES = ["观察", "对话", "动作", "思考", "提示", "提前结束"
 DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
 DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 DEFAULT_CHALLENGE_LIMIT = 3
+DEFAULT_BASE_SCORE = 50
+DEFAULT_PASS_SCORE = 60
+DEFAULT_EXCELLENT_SCORE = 85
+DEFAULT_GOAL_PASS_PROGRESS = 80
+DEFAULT_TURN_SCORE_MIN = -10
+DEFAULT_TURN_SCORE_MAX = 10
 ENTITY_KEYS = ["people", "projects", "locations", "organizations", "assets"]
 
 GLOBAL_CONTEXT = (
@@ -96,6 +102,149 @@ def normalize_text_list(value) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def clamp_int(value: int, min_value: int, max_value: int) -> int:
+    return max(min_value, min(max_value, value))
+
+
+def coerce_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def merge_unique_strings(base_items: list[str], new_items: list[str]) -> list[str]:
+    merged = []
+    seen = set()
+    for item in base_items + new_items:
+        value = str(item).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        merged.append(value)
+    return merged
+
+
+def normalize_goal_framework(raw_goal, victory_condition: str) -> dict:
+    goal = raw_goal if isinstance(raw_goal, dict) else {}
+    default_objective = (
+        victory_condition.strip() if isinstance(victory_condition, str) else ""
+    )
+    if not default_objective:
+        default_objective = "完成关卡主目标并形成明确行动。"
+    primary_objective = str(goal.get("primary_objective", "")).strip() or default_objective
+    must_complete = normalize_text_list(goal.get("must_complete"))
+    if not must_complete:
+        must_complete = [primary_objective]
+    optional_bonus = normalize_text_list(goal.get("optional_bonus"))
+    scope_boundary = str(goal.get("scope_boundary", "")).strip()
+    if not scope_boundary:
+        scope_boundary = (
+            "仅围绕本关核心冲突判定结果，主目标达成后可直接结算，"
+            "不要无故拓展到后续场景。"
+        )
+    completion_signal = str(goal.get("completion_signal", "")).strip()
+    if not completion_signal:
+        completion_signal = "出现与主目标一致的具体共识或可执行行动。"
+    return {
+        "primary_objective": primary_objective,
+        "must_complete": must_complete,
+        "optional_bonus": optional_bonus,
+        "scope_boundary": scope_boundary,
+        "completion_signal": completion_signal,
+    }
+
+
+def normalize_scoring_config(raw_scoring) -> dict:
+    scoring = raw_scoring if isinstance(raw_scoring, dict) else {}
+    base_score = clamp_int(
+        coerce_int(scoring.get("base_score"), DEFAULT_BASE_SCORE),
+        0,
+        100,
+    )
+    pass_score = clamp_int(
+        coerce_int(scoring.get("pass_score"), DEFAULT_PASS_SCORE),
+        0,
+        100,
+    )
+    excellent_score = clamp_int(
+        coerce_int(scoring.get("excellent_score"), DEFAULT_EXCELLENT_SCORE),
+        0,
+        100,
+    )
+    if excellent_score < pass_score:
+        excellent_score = pass_score
+    goal_pass_progress = clamp_int(
+        coerce_int(scoring.get("goal_pass_progress"), DEFAULT_GOAL_PASS_PROGRESS),
+        0,
+        100,
+    )
+    turn_score_min = coerce_int(
+        scoring.get("turn_score_min"),
+        DEFAULT_TURN_SCORE_MIN,
+    )
+    turn_score_max = coerce_int(
+        scoring.get("turn_score_max"),
+        DEFAULT_TURN_SCORE_MAX,
+    )
+    if turn_score_min > turn_score_max:
+        turn_score_min, turn_score_max = turn_score_max, turn_score_min
+    return {
+        "base_score": base_score,
+        "pass_score": pass_score,
+        "excellent_score": excellent_score,
+        "goal_pass_progress": goal_pass_progress,
+        "turn_score_min": turn_score_min,
+        "turn_score_max": turn_score_max,
+    }
+
+
+def build_settlement(level_config: dict, reason: str) -> dict:
+    scoring = normalize_scoring_config(level_config.get("scoring_config", {}))
+    score_total = clamp_int(
+        coerce_int(
+            st.session_state.get("score_total", scoring["base_score"]),
+            scoring["base_score"],
+        ),
+        0,
+        100,
+    )
+    goal_progress = clamp_int(
+        coerce_int(st.session_state.get("goal_progress", 0), 0),
+        0,
+        100,
+    )
+    goal_completed = bool(st.session_state.get("goal_completed", False))
+    if goal_progress >= scoring["goal_pass_progress"]:
+        goal_completed = True
+
+    status = "won" if goal_completed else "lost"
+    if score_total >= scoring["excellent_score"]:
+        grade = "S"
+    elif score_total >= scoring["pass_score"]:
+        grade = "A"
+    elif score_total >= scoring["pass_score"] - 10:
+        grade = "B"
+    else:
+        grade = "C"
+
+    result_text = "通关" if status == "won" else "未通关"
+    summary = (
+        f"本局结算：{result_text}。得分 {score_total}/100（评级 {grade}），"
+        f"目标达成度 {goal_progress}%（主目标{'已达成' if goal_completed else '未达成'}）。"
+        f"结算原因：{reason}"
+    )
+    return {
+        "status": status,
+        "grade": grade,
+        "score_total": score_total,
+        "goal_progress": goal_progress,
+        "goal_completed": goal_completed,
+        "reason": reason,
+        "summary": summary,
+    }
 
 
 def format_model_explanation(explanation) -> str:
@@ -196,6 +345,8 @@ def build_export_markdown(level_config: dict) -> str:
     target_model = level_config.get("target_model", "")
     intro = level_config.get("intro", "")
     victory = level_config.get("victory_condition", "")
+    goal_framework = normalize_goal_framework(level_config.get("goal_framework", {}), victory)
+    scoring_config = normalize_scoring_config(level_config.get("scoring_config", {}))
     setting_text = format_setting(level_config.get("setting", ""))
     model_hint = str(level_config.get("model_hint", "")).strip()
     explanation = format_model_explanation_markdown(
@@ -208,9 +359,13 @@ def build_export_markdown(level_config: dict) -> str:
         f"- 目标能力/策略：{target_model}",
         f"- 能力补充说明：{model_hint or '无'}",
         f"- 胜利条件：{victory}",
+        f"- 关卡主目标：{goal_framework.get('primary_objective', '')}",
+        f"- 目标边界：{goal_framework.get('scope_boundary', '')}",
         f"- 最大回合：{level_config.get('max_turns', '')}",
         f"- 挑战额度：{st.session_state.get('challenge_count', '')}"
         f"/{st.session_state.get('challenge_limit', '')}",
+        f"- 当前得分：{st.session_state.get('score_total', scoring_config['base_score'])}/100",
+        f"- 目标达成度：{st.session_state.get('goal_progress', 0)}%",
         f"- 当前回合：{st.session_state.get('turn_count', '')}",
         f"- 当前状态：{st.session_state.get('status', '')}",
         "",
@@ -234,6 +389,16 @@ def build_export_markdown(level_config: dict) -> str:
     else:
         lines.append("- 暂无对话记录。")
     lines.append("")
+    settlement = st.session_state.get("settlement")
+    if settlement:
+        lines.append("## 结算结果")
+        lines.append(
+            f"- 结果：{'通关' if settlement.get('status') == 'won' else '未通关'}"
+        )
+        lines.append(f"- 得分：{settlement.get('score_total', '')}/100")
+        lines.append(f"- 目标达成度：{settlement.get('goal_progress', '')}%")
+        lines.append(f"- 结算原因：{settlement.get('reason', '')}")
+        lines.append("")
     mentor_report = st.session_state.get("mentor_report")
     if mentor_report:
         lines.append("## 复盘报告")
@@ -289,6 +454,21 @@ def build_level_builder_prompt() -> str:
         '  "title": "...",\n'
         '  "intro": "...",\n'
         '  "victory_condition": "...",\n'
+        '  "goal_framework": {\n'
+        '    "primary_objective": "...",\n'
+        '    "must_complete": ["..."],\n'
+        '    "optional_bonus": ["..."],\n'
+        '    "scope_boundary": "...",\n'
+        '    "completion_signal": "..."\n'
+        "  },\n"
+        '  "scoring_config": {\n'
+        '    "base_score": 50,\n'
+        '    "pass_score": 60,\n'
+        '    "excellent_score": 85,\n'
+        '    "goal_pass_progress": 80,\n'
+        '    "turn_score_min": -10,\n'
+        '    "turn_score_max": 10\n'
+        "  },\n"
         '  "max_turns": 10,\n'
         '  "challenge_limit": 3,\n'
         '  "model_explanation": {\n'
@@ -310,6 +490,8 @@ def build_level_builder_prompt() -> str:
         "- triggers/steps/success_signals各给3-5条。\n"
         "- 若提供model_hint，需将其融入解释与案例中。\n"
         "- victory_condition要可判定但不要直接照抄用户输入。\n"
+        "- goal_framework必须可执行且可判定：must_complete可核对、scope_boundary必须限定在当前冲突，不要无故拓展到新场景。\n"
+        "- 主目标一旦达成，应允许立即结算，不应要求额外回合强行延展剧情。\n"
     )
 
 
@@ -359,12 +541,18 @@ def normalize_level_config(
     victory_condition = str(raw_level.get("victory_condition", "")).strip()
     if not victory_condition:
         victory_condition = "依据目标能力/策略做出关键决策并控制风险。"
+    goal_framework = normalize_goal_framework(
+        raw_level.get("goal_framework", {}),
+        victory_condition,
+    )
+    scoring_config = normalize_scoring_config(raw_level.get("scoring_config", {}))
 
     challenge_limit = raw_level.get("challenge_limit", DEFAULT_CHALLENGE_LIMIT)
     try:
         challenge_limit = int(challenge_limit)
     except (TypeError, ValueError):
         challenge_limit = DEFAULT_CHALLENGE_LIMIT
+    challenge_limit = max(0, challenge_limit)
 
     model_explanation = raw_level.get("model_explanation", {})
     if not isinstance(model_explanation, (dict, str)):
@@ -382,6 +570,8 @@ def normalize_level_config(
         "intro": intro,
         "target_model": target_model,
         "victory_condition": victory_condition,
+        "goal_framework": goal_framework,
+        "scoring_config": scoring_config,
         "max_turns": max_turns,
         "challenge_limit": challenge_limit,
         "model_explanation": model_explanation,
@@ -460,6 +650,19 @@ def load_level_configs() -> list[dict]:
                 data["max_turns"] = 10
             if "challenge_limit" not in data:
                 data["challenge_limit"] = DEFAULT_CHALLENGE_LIMIT
+            data["max_turns"] = max(1, coerce_int(data.get("max_turns", 10), 10))
+            data["challenge_limit"] = max(
+                0,
+                coerce_int(data.get("challenge_limit", DEFAULT_CHALLENGE_LIMIT), DEFAULT_CHALLENGE_LIMIT),
+            )
+            victory_condition = str(data.get("victory_condition", "")).strip()
+            data["goal_framework"] = normalize_goal_framework(
+                data.get("goal_framework", {}),
+                victory_condition,
+            )
+            data["scoring_config"] = normalize_scoring_config(
+                data.get("scoring_config", {}),
+            )
             configs.append(data)
         except (OSError, json.JSONDecodeError):
             continue
@@ -468,16 +671,28 @@ def load_level_configs() -> list[dict]:
 
 
 def reset_game(level_config: dict) -> None:
+    scoring_config = normalize_scoring_config(level_config.get("scoring_config", {}))
+    goal_framework = normalize_goal_framework(
+        level_config.get("goal_framework", {}),
+        str(level_config.get("victory_condition", "")),
+    )
     st.session_state.history = [{"role": "assistant", "content": level_config["intro"]}]
     st.session_state.game_log = []
     st.session_state.turn_count = 0
     st.session_state.game_over = False
     st.session_state.status = "active"
     st.session_state.mentor_report = None
+    st.session_state.settlement = None
     st.session_state.last_logic = None
     st.session_state.entity_bank = normalize_entity_bank(
         level_config.get("entities", {})
     )
+    st.session_state.score_total = scoring_config["base_score"]
+    st.session_state.score_history = []
+    st.session_state.goal_completed = False
+    st.session_state.goal_progress = 0
+    st.session_state.met_criteria = []
+    st.session_state.pending_criteria = list(goal_framework.get("must_complete", []))
     st.session_state.challenge_count = 0
     st.session_state.challenge_limit = int(
         level_config.get("challenge_limit", DEFAULT_CHALLENGE_LIMIT)
@@ -500,6 +715,25 @@ def ensure_game_state(level_config: dict) -> None:
         st.session_state.challenge_limit = int(
             level_config.get("challenge_limit", DEFAULT_CHALLENGE_LIMIT)
         )
+    scoring_config = normalize_scoring_config(level_config.get("scoring_config", {}))
+    goal_framework = normalize_goal_framework(
+        level_config.get("goal_framework", {}),
+        str(level_config.get("victory_condition", "")),
+    )
+    if "score_total" not in st.session_state:
+        st.session_state.score_total = scoring_config["base_score"]
+    if "score_history" not in st.session_state:
+        st.session_state.score_history = []
+    if "goal_completed" not in st.session_state:
+        st.session_state.goal_completed = False
+    if "goal_progress" not in st.session_state:
+        st.session_state.goal_progress = 0
+    if "met_criteria" not in st.session_state:
+        st.session_state.met_criteria = []
+    if "pending_criteria" not in st.session_state:
+        st.session_state.pending_criteria = list(goal_framework.get("must_complete", []))
+    if "settlement" not in st.session_state:
+        st.session_state.settlement = None
 
     if st.session_state.selected_level_id != level_config["level_id"]:
         reset_game(level_config)
@@ -606,8 +840,14 @@ def normalize_logic_result(
         "normalized_input": "",
         "corrections": [],
         "entities": {},
+        "goal_completed": False,
+        "goal_progress": 0,
+        "goal_reason": "",
+        "met_criteria": [],
+        "pending_criteria": [],
         "introduce_challenge": False,
         "challenge_note": "",
+        "max_turn_reached": False,
     }
     if not result:
         return defaults
@@ -623,20 +863,38 @@ def normalize_logic_result(
         except (ValueError, TypeError):
             merged["hidden_score"] = 0
     merged["game_over"] = bool(merged["game_over"])
+    merged["goal_completed"] = bool(merged["goal_completed"])
+    merged["goal_progress"] = clamp_int(coerce_int(merged.get("goal_progress"), 0), 0, 100)
+    if not isinstance(merged["goal_reason"], str):
+        merged["goal_reason"] = str(merged["goal_reason"])
+    merged["met_criteria"] = normalize_text_list(merged.get("met_criteria"))
+    merged["pending_criteria"] = normalize_text_list(merged.get("pending_criteria"))
 
+    if merged["status"] == "won":
+        merged["goal_completed"] = True
+        merged["goal_progress"] = 100
+    elif merged["goal_progress"] == 0:
+        if merged["outcome"] == "success":
+            merged["goal_progress"] = 70
+        elif merged["outcome"] == "neutral":
+            merged["goal_progress"] = 40
+        else:
+            merged["goal_progress"] = 20
+
+    if turn_count >= max_turns:
+        merged["max_turn_reached"] = True
     if turn_count >= max_turns and not merged["game_over"]:
         merged["game_over"] = True
-        merged["status"] = "lost"
         merged["narrative_guidance"] = (
             f"{merged['narrative_guidance']} "
-            "The game ends because the maximum turns were reached."
+            "已达到最大回合，请收束并等待结算。"
         )
         merged["internal_comment"] = (
-            f"{merged['internal_comment']} | Forced game over by max turns."
+            f"{merged['internal_comment']} | Reached max turns, wait for settlement."
         ).strip(" |")
 
     if merged["game_over"] and merged["status"] == "active":
-        merged["status"] = "won" if merged["outcome"] == "success" else "lost"
+        merged["status"] = "won" if merged["goal_completed"] else "lost"
     return merged
 
 
@@ -655,6 +913,11 @@ def build_logic_prompt(level_config: dict) -> str:
         model_explanation = "请根据目标能力/策略做出合理判定。"
     model_hint = str(level_config.get("model_hint", "")).strip()
     setting_text = format_setting(level_config.get("setting", {}))
+    goal_framework = normalize_goal_framework(
+        level_config.get("goal_framework", {}),
+        str(level_config.get("victory_condition", "")),
+    )
+    scoring_config = normalize_scoring_config(level_config.get("scoring_config", {}))
     return (
         f"{GLOBAL_CONTEXT}\n"
         "角色：你是逻辑判官。不要写故事，只输出JSON。\n"
@@ -665,18 +928,28 @@ def build_logic_prompt(level_config: dict) -> str:
         f"- 能力说明：{model_explanation}\n"
         f"- 能力补充说明：{model_hint or '无'}\n"
         f"- 胜利条件：{level_config['victory_condition']}\n"
+        f"- 关卡主目标：{goal_framework['primary_objective']}\n"
+        f"- 必达清单：{'；'.join(goal_framework['must_complete'])}\n"
+        f"- 可选加分项：{'；'.join(goal_framework['optional_bonus']) or '无'}\n"
+        f"- 目标边界：{goal_framework['scope_boundary']}\n"
+        f"- 完成信号：{goal_framework['completion_signal']}\n"
+        f"- 评分规则：基础分{scoring_config['base_score']}，"
+        f"通关线{scoring_config['pass_score']}，优秀线{scoring_config['excellent_score']}，"
+        f"单回合加减分范围{scoring_config['turn_score_min']}..{scoring_config['turn_score_max']}\n"
         f"- 最大回合：{level_config['max_turns']}\n"
         f"- 补充设定：{setting_text}\n"
         "任务：\n"
         "1) 分析用户意图。\n"
         "2) 判断是否符合现实物理规则。\n"
         "3) 判断是否符合目标能力/策略（优先看步骤与成功信号）。\n"
-        "4) 更新游戏状态并给叙事者提示。\n"
-        "5) 识别错别字或误拼写，推断用户本意，并给出修正结果。\n"
+        "4) 目标判定：仅依据主目标和必达清单评估，遵守目标边界，不要无故拓展新场景。\n"
+        "5) 若主目标已达成并出现完成信号，应立即允许收束（game_over=true）。\n"
+        "6) 更新游戏状态并给叙事者提示。\n"
+        "7) 识别错别字或误拼写，推断用户本意，并给出修正结果。\n"
         "   - 如果不确定，保留原词但给出可能的备选。\n"
-        "6) 实体一致性：基于提供的entity_bank复用已有名称，\n"
+        "8) 实体一致性：基于提供的entity_bank复用已有名称，\n"
         "   仅在必要时新增，并在输出的entities中给出最新实体表。\n"
-        "7) 挑战预算：全关最多引入3个新难题。\n"
+        "9) 挑战预算：全关最多引入3个新难题。\n"
         "   - 用户payload会提供challenge_count与challenge_limit。\n"
         "   - 当剩余额度<=0时，禁止引入新难题，应推动收束或成功。\n"
         "NON_EXPERT_PROTOCOL（非专业领域优先）：\n"
@@ -698,6 +971,11 @@ def build_logic_prompt(level_config: dict) -> str:
         "- normalized_input: 纠正错别字后的用户意图文本\n"
         "- corrections: 列表，每项包含wrong/right/note\n"
         "- entities: 实体表，包含people/projects/locations/organizations/assets\n"
+        "- goal_completed: 布尔值，主目标是否已达成\n"
+        "- goal_progress: 整数 0..100，目标达成度\n"
+        "- goal_reason: 简短说明目标判定依据\n"
+        "- met_criteria: 已满足的必达项列表\n"
+        "- pending_criteria: 未满足的必达项列表\n"
         "- introduce_challenge: 是否引入新难题（true/false）\n"
         "- challenge_note: 本回合是否新增难题的简短说明\n"
         "只输出JSON，不要额外文本。"
@@ -744,7 +1022,9 @@ def build_mentor_prompt() -> str:
     return (
         f"{GLOBAL_CONTEXT}\n"
         "角色：你是影子导师。用Markdown写复盘分析。\n"
+        "请优先依据关卡主目标、必达清单与结算分数做判断。\n"
         "聚焦能力/策略，不要陷入行业执行细节。\n"
+        "若是提前结束，按当前得分与目标进度复盘，不要直接等同于失败放弃。\n"
         "必须包含以下小节：\n"
         "1) 总结\n"
         "2) 能力运用\n"
@@ -857,22 +1137,31 @@ def process_turn(
                 "action_type": action_type,
             }
         )
+        settlement = build_settlement(
+            level_config,
+            reason="玩家选择提前结束，按当前目标进度与得分结算。",
+        )
         st.session_state.history.append(
             {
                 "role": "assistant",
-                "content": "你选择提前结束本次挑战，进入复盘环节。",
+                "content": settlement["summary"],
             }
         )
+        st.session_state.settlement = settlement
         st.session_state.game_log.append(
             {
                 "turn": st.session_state.turn_count,
                 "action_type": action_type,
                 "user_input": end_request,
-                "note": "User requested early termination.",
+                "score_total": settlement["score_total"],
+                "goal_progress": settlement["goal_progress"],
+                "goal_completed": settlement["goal_completed"],
+                "status": settlement["status"],
+                "note": "User requested early termination and score-based settlement.",
             }
         )
         st.session_state.game_over = True
-        st.session_state.status = "lost"
+        st.session_state.status = settlement["status"]
         mentor_messages = [
             {"role": "system", "content": build_mentor_prompt()},
             {
@@ -881,9 +1170,10 @@ def process_turn(
                     {
                         "level": level_config,
                         "final_status": st.session_state.status,
+                        "settlement": settlement,
                         "history": st.session_state.history,
                         "game_log": st.session_state.game_log,
-                        "reason": "User ended the game early.",
+                        "reason": "User ended the game early and settled by score.",
                     },
                     ensure_ascii=False,
                 ),
@@ -931,6 +1221,13 @@ def process_turn(
         "max_turns": level_config["max_turns"],
         "current_status": st.session_state.status,
         "victory_condition": level_config["victory_condition"],
+        "goal_framework": level_config.get("goal_framework", {}),
+        "scoring_config": level_config.get("scoring_config", {}),
+        "current_score": st.session_state.score_total,
+        "goal_progress": st.session_state.goal_progress,
+        "goal_completed": st.session_state.goal_completed,
+        "met_criteria": st.session_state.met_criteria,
+        "pending_criteria": st.session_state.pending_criteria,
         "recent_history": history_summary,
         "entity_bank": st.session_state.entity_bank,
         "challenge_count": st.session_state.challenge_count,
@@ -986,6 +1283,57 @@ def process_turn(
         corrections = []
     logic_result["normalized_input"] = normalized_input
     logic_result["corrections"] = corrections
+
+    scoring_config = normalize_scoring_config(level_config.get("scoring_config", {}))
+    turn_score = clamp_int(
+        logic_result["hidden_score"],
+        scoring_config["turn_score_min"],
+        scoring_config["turn_score_max"],
+    )
+    score_before = st.session_state.score_total
+    st.session_state.score_total = clamp_int(score_before + turn_score, 0, 100)
+    st.session_state.score_history.append(
+        {
+            "turn": next_turn,
+            "delta": turn_score,
+            "before": score_before,
+            "after": st.session_state.score_total,
+            "outcome": logic_result["outcome"],
+        }
+    )
+    logic_result["turn_score"] = turn_score
+    logic_result["score_total"] = st.session_state.score_total
+
+    st.session_state.goal_completed = (
+        st.session_state.goal_completed or bool(logic_result.get("goal_completed"))
+    )
+    reported_progress = clamp_int(coerce_int(logic_result.get("goal_progress"), 0), 0, 100)
+    if (
+        reported_progress <= st.session_state.goal_progress
+        and logic_result["outcome"] == "success"
+        and not st.session_state.goal_completed
+    ):
+        reported_progress = clamp_int(st.session_state.goal_progress + 15, 0, 100)
+    st.session_state.goal_progress = max(st.session_state.goal_progress, reported_progress)
+    met_criteria = normalize_text_list(logic_result.get("met_criteria"))
+    pending_criteria = normalize_text_list(logic_result.get("pending_criteria"))
+    if met_criteria:
+        st.session_state.met_criteria = merge_unique_strings(
+            st.session_state.met_criteria,
+            met_criteria,
+        )
+    if pending_criteria:
+        st.session_state.pending_criteria = pending_criteria
+    if st.session_state.goal_progress >= scoring_config["goal_pass_progress"]:
+        st.session_state.goal_completed = True
+    if st.session_state.goal_completed:
+        st.session_state.goal_progress = 100
+        st.session_state.pending_criteria = []
+    logic_result["goal_completed"] = st.session_state.goal_completed
+    logic_result["goal_progress"] = st.session_state.goal_progress
+    logic_result["met_criteria"] = st.session_state.met_criteria
+    logic_result["pending_criteria"] = st.session_state.pending_criteria
+
     logic_entities = logic_result.get("entities", {})
     if not isinstance(logic_entities, dict):
         logic_entities = {}
@@ -1015,6 +1363,12 @@ def process_turn(
             "user_input": user_input,
             "normalized_input": normalized_input,
             "corrections": corrections,
+            "turn_score": turn_score,
+            "score_total": st.session_state.score_total,
+            "goal_progress": st.session_state.goal_progress,
+            "goal_completed": st.session_state.goal_completed,
+            "met_criteria": st.session_state.met_criteria,
+            "pending_criteria": st.session_state.pending_criteria,
             "entities": st.session_state.entity_bank,
             "challenge_count": st.session_state.challenge_count,
             "challenge_limit": st.session_state.challenge_limit,
@@ -1044,6 +1398,9 @@ def process_turn(
                     "corrections": corrections,
                     "logic_result": logic_result,
                     "turn": next_turn,
+                    "score_total": st.session_state.score_total,
+                    "goal_progress": st.session_state.goal_progress,
+                    "goal_completed": st.session_state.goal_completed,
                     "entity_bank": st.session_state.entity_bank,
                     "challenge_count": st.session_state.challenge_count,
                     "challenge_limit": st.session_state.challenge_limit,
@@ -1082,11 +1439,40 @@ def process_turn(
 
     st.session_state.history.append({"role": "assistant", "content": narrative_text})
     st.session_state.turn_count = next_turn
-    st.session_state.game_over = bool(logic_result["game_over"])
-    st.session_state.status = logic_result["status"]
+    st.session_state.game_over = False
+    st.session_state.status = "active"
 
-    if not st.session_state.game_over:
+    should_settle = (
+        bool(logic_result["game_over"])
+        or st.session_state.goal_completed
+        or next_turn >= level_config["max_turns"]
+    )
+    if not should_settle:
         return
+
+    if st.session_state.goal_completed:
+        settle_reason = "主目标已达成，按当前分数结算。"
+    elif next_turn >= level_config["max_turns"]:
+        settle_reason = "已达到最大回合，按当前目标进度与分数结算。"
+    else:
+        settle_reason = "逻辑判官判定可结算，按目标与分数结算。"
+
+    settlement = build_settlement(level_config, reason=settle_reason)
+    st.session_state.settlement = settlement
+    st.session_state.game_over = True
+    st.session_state.status = settlement["status"]
+    st.session_state.history.append({"role": "assistant", "content": settlement["summary"]})
+    st.session_state.game_log.append(
+        {
+            "turn": next_turn,
+            "action_type": "结算",
+            "status": settlement["status"],
+            "score_total": settlement["score_total"],
+            "goal_progress": settlement["goal_progress"],
+            "goal_completed": settlement["goal_completed"],
+            "reason": settle_reason,
+        }
+    )
 
     mentor_messages = [
         {"role": "system", "content": build_mentor_prompt()},
@@ -1096,6 +1482,7 @@ def process_turn(
                 {
                     "level": level_config,
                     "final_status": st.session_state.status,
+                    "settlement": settlement,
                     "history": st.session_state.history,
                     "game_log": st.session_state.game_log,
                 },
@@ -1319,6 +1706,11 @@ if create_submitted:
 
 selected_level = st.session_state.selected_level_config
 ensure_game_state(selected_level)
+selected_goal_framework = normalize_goal_framework(
+    selected_level.get("goal_framework", {}),
+    str(selected_level.get("victory_condition", "")),
+)
+selected_scoring_config = normalize_scoring_config(selected_level.get("scoring_config", {}))
 if restart_clicked:
     reset_game(selected_level)
     st.rerun()
@@ -1334,6 +1726,25 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.caption(turn_info)
+st.markdown(f"**关卡主目标**：{selected_goal_framework['primary_objective']}")
+st.caption(
+    f"目标达成度：{st.session_state.goal_progress}%｜"
+    f"当前得分：{st.session_state.score_total}/100｜"
+    f"通关线：{selected_scoring_config['pass_score']}/100"
+)
+with st.expander("目标清单与判定边界", expanded=False):
+    st.markdown("**必达项**")
+    st.markdown(
+        "\n".join([f"- {item}" for item in selected_goal_framework["must_complete"]])
+    )
+    optional_bonus = selected_goal_framework.get("optional_bonus", [])
+    st.markdown("**可选加分项**")
+    if optional_bonus:
+        st.markdown("\n".join([f"- {item}" for item in optional_bonus]))
+    else:
+        st.markdown("- 无")
+    st.markdown(f"**目标边界**：{selected_goal_framework['scope_boundary']}")
+    st.markdown(f"**完成信号**：{selected_goal_framework['completion_signal']}")
 with st.expander(
     f"能力/策略解释：{selected_level['target_model']}",
     expanded=False,
@@ -1341,7 +1752,20 @@ with st.expander(
     render_model_explanation(get_model_explanation(selected_level))
 
 if st.session_state.game_over:
-    if st.session_state.status == "won":
+    settlement = st.session_state.get("settlement")
+    if settlement:
+        if st.session_state.status == "won":
+            st.success(
+                f"结算完成：通关｜得分 {settlement['score_total']}/100｜"
+                f"目标达成度 {settlement['goal_progress']}%"
+            )
+        else:
+            st.error(
+                f"结算完成：未通关｜得分 {settlement['score_total']}/100｜"
+                f"目标达成度 {settlement['goal_progress']}%"
+            )
+        st.info(settlement["summary"])
+    elif st.session_state.status == "won":
         st.success("Game Over: Victory")
     else:
         st.error("Game Over: Defeat")
@@ -1416,6 +1840,11 @@ if debug_mode:
             st.text(
                 f"挑战额度：{st.session_state.challenge_count}/"
                 f"{st.session_state.challenge_limit}"
+            )
+            st.text(
+                f"得分：{st.session_state.score_total}/100 | "
+                f"目标达成度：{st.session_state.goal_progress}% | "
+                f"主目标达成：{st.session_state.goal_completed}"
             )
 
         hint_debug = debug_payloads.get("hint")
