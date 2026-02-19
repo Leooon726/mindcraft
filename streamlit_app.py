@@ -518,6 +518,9 @@ def ensure_game_state(level_config: dict) -> None:
     st.session_state.status = normalize_progress_status(
         st.session_state.get("status", "active")
     )
+    backfill_score_state_from_log()
+    if st.session_state.status == "completed":
+        st.session_state.game_over = True
 
     if st.session_state.selected_level_id != level_config["level_id"]:
         reset_game(level_config)
@@ -571,6 +574,41 @@ def format_progress_status(status_value: str) -> str:
 def update_running_score(turn_score: float) -> None:
     score_total = float(st.session_state.get("score_total", 0.0)) + float(turn_score)
     score_count = int(st.session_state.get("score_count", 0)) + 1
+    st.session_state.score_total = score_total
+    st.session_state.score_count = score_count
+    st.session_state.current_score = clamp_score(score_total / score_count)
+
+
+def derive_turn_score(logic_result: dict) -> float:
+    score_value = logic_result.get("score")
+    if isinstance(score_value, (int, float)):
+        return clamp_score(float(score_value))
+    hidden_score = logic_result.get("hidden_score", 0)
+    try:
+        hidden_score = int(hidden_score)
+    except (TypeError, ValueError):
+        hidden_score = 0
+    return hidden_score_to_turn_score(hidden_score)
+
+
+def backfill_score_state_from_log() -> None:
+    if int(st.session_state.get("score_count", 0)) > 0:
+        return
+    game_log = st.session_state.get("game_log", [])
+    if not isinstance(game_log, list) or not game_log:
+        return
+    score_total = 0.0
+    score_count = 0
+    for entry in game_log:
+        if not isinstance(entry, dict):
+            continue
+        logic_result = entry.get("logic_result")
+        if not isinstance(logic_result, dict):
+            continue
+        score_total += derive_turn_score(logic_result)
+        score_count += 1
+    if score_count == 0:
+        return
     st.session_state.score_total = score_total
     st.session_state.score_count = score_count
     st.session_state.current_score = clamp_score(score_total / score_count)
@@ -656,6 +694,7 @@ def normalize_logic_result(
         "narrative_guidance": "请用现实后果推进剧情。",
         "hidden_score": 0,
         "score": 6.0,
+        "objective_completed": False,
         "game_over": False,
         "status": "active",
         "state_change": "",
@@ -683,7 +722,14 @@ def normalize_logic_result(
         merged["score"] = clamp_score(float(score_value))
     else:
         merged["score"] = hidden_score_to_turn_score(merged["hidden_score"])
+    merged["objective_completed"] = bool(merged.get("objective_completed", False))
     merged["game_over"] = bool(merged["game_over"])
+    if merged["objective_completed"]:
+        merged["game_over"] = True
+        merged["status"] = "completed"
+        merged["introduce_challenge"] = False
+        if not merged["state_change"]:
+            merged["state_change"] = "已满足关卡目标，进入结算。"
     if merged["status"] == "completed" and not merged["game_over"]:
         merged["game_over"] = True
 
@@ -742,9 +788,13 @@ def build_logic_prompt(level_config: dict) -> str:
         "7) 挑战预算：全关最多引入3个新难题。\n"
         "   - 用户payload会提供challenge_count与challenge_limit。\n"
         "   - 当剩余额度<=0时，禁止引入新难题，应推动收束或完成。\n"
-        "8) 允许提前完成：当用户已满足大部分核心步骤/成功信号时，\n"
-        "   即使未到最大回合，也可设game_over=true且status=completed。\n"
-        "9) 评分口径偏宽松：\n"
+        "8) 优先检查目标是否已达成：\n"
+        "   - 一旦满足关卡胜利条件，必须返回objective_completed=true，\n"
+        "     并同时设game_over=true、status=completed、introduce_challenge=false。\n"
+        "   - 达成后禁止继续扩展支线或新增任务。\n"
+        "9) 允许提前完成：当用户已满足大部分核心步骤/成功信号时，\n"
+        "   即使未到最大回合，也可提前结算。\n"
+        "10) 评分口径偏宽松：\n"
         "   - 方向正确且有实质推进时，score建议>=7。\n"
         "   - 已形成具体可执行约定时，score建议>=8。\n"
         "   - 只有明显违背目标能力时，才给低分（<6）。\n"
@@ -761,6 +811,7 @@ def build_logic_prompt(level_config: dict) -> str:
         "- narrative_guidance: 给叙事者的中文提示\n"
         "- hidden_score: 整数 -10..10\n"
         "- score: 浮点数 0..10（本回合评分，优先使用此字段）\n"
+        "- objective_completed: 布尔值，是否已满足关卡目标\n"
         "- game_over: 布尔值\n"
         "- status: active|completed\n"
         "- state_change: 简短状态变化\n"
@@ -785,6 +836,7 @@ def build_narrator_prompt() -> str:
         "- 可以合理推进时间（如几天或几个月后）。\n"
         "- 仅在introduce_challenge为true且仍有挑战额度时，以困境问题收尾。\n"
         "- 当挑战额度用尽时，只能推进、收束或达成结果，不再抛新难题。\n"
+        "- 当logic_result.objective_completed为true时，必须立即收束本关，禁止扩展新问题。\n"
         "- 不要暴露JSON或内部评估备注。\n"
         "- 若游戏结束，用收束句收尾，不要继续提问。"
         "- 若logic_result提示意图通过，应给出正向结果并推进剧情。\n"
@@ -815,6 +867,7 @@ def build_mentor_prompt() -> str:
         f"{GLOBAL_CONTEXT}\n"
         "角色：你是影子导师。用Markdown写复盘分析。\n"
         "采用0~10评分制，不要给出成功/失败二元判定。\n"
+        "严禁使用“成功/失败/胜利/败北/输赢”作为最终结论词。\n"
         "聚焦能力/策略，不要陷入行业执行细节。\n"
         "必须包含以下小节：\n"
         "0) 综合评分（0~10）\n"
@@ -932,7 +985,7 @@ def process_turn(
         st.session_state.history.append(
             {
                 "role": "assistant",
-                "content": "你选择提前结束本次挑战，进入复盘环节。",
+                "content": "你选择提前结束本次挑战，进入评分复盘环节。",
             }
         )
         st.session_state.game_log.append(
@@ -1062,11 +1115,7 @@ def process_turn(
         corrections = []
     logic_result["normalized_input"] = normalized_input
     logic_result["corrections"] = corrections
-    turn_score_raw = logic_result.get("score")
-    if isinstance(turn_score_raw, (int, float)):
-        turn_score = clamp_score(float(turn_score_raw))
-    else:
-        turn_score = hidden_score_to_turn_score(logic_result["hidden_score"])
+    turn_score = derive_turn_score(logic_result)
     logic_result["score"] = turn_score
     update_running_score(turn_score)
     logic_entities = logic_result.get("entities", {})
@@ -1077,6 +1126,13 @@ def process_turn(
         logic_entities,
     )
     introduce_challenge = bool(logic_result.get("introduce_challenge"))
+    if logic_result.get("objective_completed"):
+        logic_result["game_over"] = True
+        logic_result["status"] = "completed"
+        introduce_challenge = False
+        logic_result["introduce_challenge"] = False
+        if not logic_result.get("challenge_note"):
+            logic_result["challenge_note"] = "目标已达成，不再引入新难题。"
     if st.session_state.challenge_count >= st.session_state.challenge_limit:
         introduce_challenge = False
         logic_result["introduce_challenge"] = False
@@ -1103,6 +1159,7 @@ def process_turn(
             "challenge_limit": st.session_state.challenge_limit,
             "turn_score": turn_score,
             "current_score": st.session_state.current_score,
+            "objective_completed": bool(logic_result.get("objective_completed")),
             "logic_raw": logic_raw,
             "logic_result": logic_result,
         }
